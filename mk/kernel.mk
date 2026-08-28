@@ -58,6 +58,7 @@ endif
 		echo "       /init mounts devtmpfs and will fail without it."; exit 1; }
 
 VMLINUX_BIN := $(KBUILD)/arch/x86/boot/vmlinux.bin
+BZIMAGE     := $(KBUILD)/arch/x86/boot/bzImage
 
 # --- phase one: scaffold -------------------------------------------------------
 # Builds vmlinux and the in-tree modules against a placeholder initramfs, purely
@@ -76,6 +77,6 @@ endif
 # --- phase two: the real kernel ------------------------------------------------
 # $(INITRAMFS) here is the real archive, modules included. For a module-carrying
 # recipe this is an incremental relink over the scaffold, not a second full build.
-$(VMLINUX_BIN): $(KBUILD)/.scaffold $(INITRAMFS)
+$(BZIMAGE): $(KBUILD)/.scaffold $(INITRAMFS)
 	@echo "  [KERN]  building $(KVER) for recipe '$(RECIPE)'"
 	@$(MAKE) -s -C $(LINUX_SRC) O=$(abspath $(KBUILD)) -j$(JOBS) bzImage

@@ -126,6 +126,15 @@ memcpy(void *dst, const void *src, size_t count)
 }
 
 
+static __attribute__((unused))
+unsigned long strlen(const char *s)
+{
+	const char *p = s;
+
+	while (*p) p++;
+	return (unsigned long)(p - s);
+}
+
 static __u8 compute_checksum(__u8 *buffer, __u32 length)
 {
 	__u8 *end = buffer + length;
@@ -200,66 +209,112 @@ void acpi_init(struct acpi_table_rsdp *rsdp)
 	apic_init(g_rsdt);
 }
 
+/*
+ * Guest memory layout. The kernel is loaded at GUEST_LOAD_BASE and must fit,
+ * together with the memory it needs before it can read its own memory map,
+ * inside the RAM we advertise in the e820 map below.
+ */
+#define GUEST_LOAD_BASE  (0x900000UL)
+#define GUEST_RAM_START  (0x100000UL)
+#define GUEST_RAM_SIZE   (60UL * 1024 * 1024)
+
+/* Offset of struct setup_header within a bzImage; see Documentation/x86/boot.rst. */
+#define SETUP_HEADER_OFF (0x1f1)
+
+/*
+ * The 64-bit entry point is at +0x200 from the start of the protected-mode
+ * kernel. This is stable boot protocol, not a version-specific constant:
+ * boot.rst says "64-bit kernel plus 0x200", and head_64.S places startup_64
+ * behind a literal `.org 0x200`.
+ */
+#define PM_ENTRY_OFF     (0x200)
+
 void kmain(void)
 {
-
 	char *vga_base = (char *)_va(0xb8000);
-	char *vmlinux_base = (char *)_va(0x1000000);
-	char *guest_pos = &input_data;
-	char *guest_pos_end = &input_data_end;
-	unsigned long image_sz = (unsigned long)(guest_pos_end - guest_pos);
+	char *bzimage  = &input_data;
+	unsigned long bzimage_sz = (unsigned long)(&input_data_end - &input_data);
+	char *load_base = (char *)_va(GUEST_LOAD_BASE);
 
-	vmlinux_base = (char *)_va(0x900000);
+	/*
+	 * Read what we need out of the kernel's own setup header rather than
+	 * hardcoding it. init_size in particular used to be a fixed 36MB, which
+	 * silently becomes wrong on any other kernel build.
+	 */
+	struct setup_header *hdr = (struct setup_header *)(bzimage + SETUP_HEADER_OFF);
+	unsigned long setup_sects = hdr->setup_sects ? hdr->setup_sects : 4;
+	unsigned long pm_offset   = (setup_sects + 1) * 512;
+	char *pm_kernel           = bzimage + pm_offset;
+	unsigned long pm_size     = bzimage_sz - pm_offset;
+	unsigned long init_size   = hdr->init_size;
 
-	/* since the image is the last data section, make sure the vmlinux_base address is after this section */
-	if (vmlinux_base < guest_pos) while (1); 
+	/* The image is the last data section; we must not copy over ourselves. */
+	if (load_base < bzimage) while (1);
 
-	/* copy image */
-	while (image_sz > 0) {
-		--image_sz;
-		vmlinux_base[image_sz] = guest_pos[image_sz];
-	}
+	/* Sanity-check the header before trusting anything else in it. */
+	if (hdr->boot_flag != 0xAA55) while (1);
+	if (hdr->header != 0x53726448 /* "HdrS" */) while (1);
+	/* The advertised init window has to fit in the RAM we are about to claim. */
+	if (GUEST_LOAD_BASE + init_size > GUEST_RAM_START + GUEST_RAM_SIZE) while (1);
+
+	/*
+	 * Zero the whole init window before loading.
+	 *
+	 * This replaces a patch to arch/x86/boot/compressed/vmlinux.lds.S that
+	 * folded .bss and .pgtable into .data so objcopy would materialise them as
+	 * zeros inside the flat image. The underlying problem is that we enter at
+	 * startup_64 (+0x200) and so skip startup_32, which is the only code that
+	 * zeroes the page-table area (`rep stosl` over BOOT_INIT_PGT_SIZE);
+	 * alloc_pgt_page() in ident_map_64.c hands out pages without clearing them.
+	 * Zeroing here covers .bss, .pgtable and anything else the kernel expects
+	 * to find clear, for any kernel version, with no kernel change.
+	 */
+	memset(load_base, 0, init_size);
+
+	/* Load the protected-mode kernel; the setup sectors are not needed at runtime. */
+	memcpy(load_base, pm_kernel, pm_size);
 
 	acpi_init(g_rsdp);
 
 	memset(&boot_params, 0, sizeof(boot_params));
 	vga_base[0] = '!';
-	boot_params.sentinel = 0xff;
-	boot_params.hdr.version = 0x0215;
-	boot_params.hdr.vid_mode = 0xFFFF;
-	boot_params.hdr.boot_flag = 0xAA55;
-	((char *)(&boot_params.hdr.header))[0] = 'H';
-	((char *)(&boot_params.hdr.header))[1] = 'd';
-	((char *)(&boot_params.hdr.header))[2] = 'r';
-	((char *)(&boot_params.hdr.header))[3] = 's';
-	boot_params.hdr.type_of_loader = 0xFF;
-	boot_params.hdr.loadflags = 1; // the protected-mode code is loaded at 0x100000
-	boot_params.hdr.ramdisk_image = 0; //The 32-bit linear address of the initial ramdisk or ramfs. Leave at zero if there is no initial ramdisk/ramfs.
-	boot_params.hdr.ramdisk_size = 0; // Size of the initial ramdisk or ramfs. Leave at zero if there is no initial ramdisk/ramfs.
-	boot_params.hdr.heap_end_ptr = 0xe000 - 0x200;
-	boot_params.hdr.loadflags |= 0x80; /* CAN_USE_HEAP */;
-	boot_params.hdr.cmd_line_ptr = _pa(cmd_line_str);
-	boot_params.hdr.cmdline_size = sizeof(*cmd_line_str);
-	// init_setup_data.next = 0;
-	// boot_params.hdr.setup_data = _pa(&init_setup_data);
-	boot_params.hdr.init_size = 36*1024*1024;
-	boot_params.hdr.setup_data = 0; //no setup data
+
+	/*
+	 * Take the setup header from the kernel itself. This is what makes the
+	 * boot protocol version self-adjusting -- it used to be asserted as a
+	 * hardcoded 0x0215 along with a hand-assembled "HdrS" signature.
+	 */
+	memcpy(&boot_params.hdr, hdr, sizeof(struct setup_header));
+
+	boot_params.sentinel            = 0xff;
+	boot_params.hdr.vid_mode        = 0xFFFF;
+	boot_params.hdr.type_of_loader  = 0xFF;
+	boot_params.hdr.code32_start    = GUEST_LOAD_BASE;
+	boot_params.hdr.loadflags      |= 0x01;  /* LOADED_HIGH */
+	boot_params.hdr.loadflags      |= 0x80;  /* CAN_USE_HEAP */
+	boot_params.hdr.heap_end_ptr    = 0xe000 - 0x200;
+	boot_params.hdr.ramdisk_image   = 0;     /* initramfs is linked into vmlinux */
+	boot_params.hdr.ramdisk_size    = 0;
+	boot_params.hdr.setup_data      = 0;
+	boot_params.hdr.cmd_line_ptr    = _pa(cmd_line_str);
+	boot_params.hdr.cmdline_size    = strlen(cmd_line_str);
+
 	boot_params.e820_entries = 3;
-	boot_params.e820_table[0].addr = 0; 
+	boot_params.e820_table[0].addr = 0;
 	boot_params.e820_table[0].size = 0x9e000;
 	boot_params.e820_table[0].type = 1;
 
-	boot_params.e820_table[1].addr = 0x9e000; 
+	boot_params.e820_table[1].addr = 0x9e000;
 	boot_params.e820_table[1].size = 0x62000;
 	boot_params.e820_table[1].type = 2;
 
-	boot_params.e820_table[2].addr = 0x100000; // begin at 1MB
-	boot_params.e820_table[2].size = 60 * 1024 * 1024; // 60MB
+	boot_params.e820_table[2].addr = GUEST_RAM_START;
+	boot_params.e820_table[2].size = GUEST_RAM_SIZE;
 	boot_params.e820_table[2].type = 1;
 
-	asm volatile("mov %0, %%rsi;movabs $0x900200, %%rax; jmpq   *%%rax;"::"r"((unsigned long)_pa(&boot_params)));
-	while (1)
-	{
-		/* code */
+	asm volatile("mov %0, %%rsi; jmpq *%1;"
+		     :: "r"((unsigned long)_pa(&boot_params)),
+		        "r"(GUEST_LOAD_BASE + PM_ENTRY_OFF));
+	while (1) {
 	}
 }

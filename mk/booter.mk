@@ -27,14 +27,17 @@ BOOTER_CFLAGS := -g3 -O3 -ffreestanding -nostdinc -nostdlib -fno-pic \
 
 BDIR := $(BUILD)/$(RECIPE)/vmxbooter
 
-# guest_img.S does `.incbin "vmlinux.bin"` relative to its own directory, so the
+# guest_img.S does `.incbin "bzImage"` relative to its own directory, so the
 # kernel image is staged next to it rather than referenced by an absolute path.
-$(BDIR)/vmlinux.bin: $(VMLINUX_BIN)
+#
+# We embed the full bzImage, not the raw compressed vmlinux, so kmain.c can read
+# setup_sects and init_size out of the setup header instead of hardcoding them.
+$(BDIR)/bzImage: $(BZIMAGE)
 	@mkdir -p $(BDIR)
 	@cp $< $@
 
-$(BDIR)/guest_img.o: $(TOP)/vmxbooter/guest_img.S $(BDIR)/vmlinux.bin
-	@echo "  [AS]    guest_img.o (embedding $(KVER) image)"
+$(BDIR)/guest_img.o: $(TOP)/vmxbooter/guest_img.S $(BDIR)/bzImage
+	@echo "  [AS]    guest_img.o (embedding $(KVER) bzImage)"
 	@$(BOOTER_CC) -c -o $@ -I$(BDIR) $<
 
 $(BDIR)/loader.o: $(TOP)/vmxbooter/loader.S | $(BDIR)
@@ -46,7 +49,7 @@ $(BDIR)/loader.o: $(TOP)/vmxbooter/loader.S | $(BDIR)
 # the kernel's archprepare step has run. With .config as the prerequisite this
 # compiles fine serially -- the kernel build always happens to precede it -- and
 # fails under -j with "asm/types.h: No such file or directory".
-$(BDIR)/kmain.o: $(TOP)/vmxbooter/kmain.c $(VMLINUX_BIN) | $(BDIR)
+$(BDIR)/kmain.o: $(TOP)/vmxbooter/kmain.c $(BZIMAGE) | $(BDIR)
 	@echo "  [CC]    kmain.o"
 	@$(BOOTER_CC) $(BOOTER_INC) $(BOOTER_CFLAGS) -c -o $@ $<
 
