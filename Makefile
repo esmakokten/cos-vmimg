@@ -16,7 +16,11 @@ CC     ?= gcc
 # the cpio bakes in file mtimes, so two builds of the same recipe differ and the
 # image hash in the manifest identifies nothing. Override SOURCE_DATE_EPOCH to
 # stamp a real date; the default keeps rebuilds comparable.
-SOURCE_DATE_EPOCH ?= 1700000000
+# Exported, not just set: BusyBox's kconfig reads SOURCE_DATE_EPOCH from the
+# environment (scripts/kconfig/confdata.c) and otherwise stamps localtime into
+# the banner string compiled into the binary -- which made the initramfs, and so
+# the whole image, differ between machines and between BusyBox rebuilds.
+export SOURCE_DATE_EPOCH ?= 1700000000
 export KBUILD_BUILD_TIMESTAMP := $(shell date -u -d @$(SOURCE_DATE_EPOCH) 2>/dev/null)
 export KBUILD_BUILD_USER      := cos-vmimg
 export KBUILD_BUILD_HOST      := cos-vmimg
@@ -59,7 +63,7 @@ include mk/kernel.mk
 include mk/initramfs.mk
 include mk/booter.mk
 
-.PHONY: image all list run run-kvm debug iso install clean distclean gdb help
+.PHONY: image all list run run-kvm debug iso install clean clean-all distclean gdb help
 .DEFAULT_GOAL := image
 
 $(BUILD) $(OUT):
@@ -134,6 +138,13 @@ install: $(IMG) $(MANIFEST)
 
 clean:
 	rm -rf $(BUILD)/$(RECIPE) $(IMG) $(ISO) $(MANIFEST)
+
+# Everything a recipe build produces, BusyBox included. `clean` deliberately
+# keeps BusyBox because rebuilding it is slow -- but that means `clean` is not
+# enough to test reproducibility, since a cached BusyBox hides any
+# nondeterminism in its own build. Use this for that.
+clean-all: clean
+	rm -rf $(BB_SRC)
 
 # Keeps the download cache; refetching a 127MB tarball to test a Makefile edit
 # is not a good time.
