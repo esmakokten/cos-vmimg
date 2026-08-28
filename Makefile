@@ -60,9 +60,12 @@ STAMPS    := $(BUILD)/$(RECIPE)/stamps
 # configured and built for a different kernel.
 KBUILD    := $(BUILD)/$(RECIPE)/kernel-$(KVER)
 INITRAMFS := $(BUILD)/$(RECIPE)/initramfs.cpio.gz
-IMG       := $(OUT)/vmlinux-$(RECIPE).img
-ISO       := $(OUT)/kernel-$(RECIPE).iso
-MANIFEST  := $(OUT)/vmlinux-$(RECIPE).manifest
+# Output names carry the kernel version. Without it, building two versions of
+# one recipe silently overwrites the previous image and there is no way to tell
+# from the filename which kernel you are about to ship.
+IMG       := $(OUT)/vmlinux-$(RECIPE)-$(KVER).img
+ISO       := $(OUT)/kernel-$(RECIPE)-$(KVER).iso
+MANIFEST  := $(OUT)/vmlinux-$(RECIPE)-$(KVER).manifest
 
 include mk/fetch.mk
 include mk/kernel.mk

@@ -24,7 +24,11 @@ BOOTER_CFLAGS := -g3 -O3 -ffreestanding -nostdinc -nostdlib -fno-pic \
                  -Wno-unused-function -Wno-unused-variable \
                  -Wno-unused-but-set-variable $(BOOTER_WARN)
 
-BDIR := $(BUILD)/$(RECIPE)/vmxbooter
+# Version-specific for the same reason $(KBUILD) is: this directory holds the
+# staged bzImage and the linked kernel.img, and sharing it across versions means
+# the last build wins and the ISO can carry a different kernel than you asked
+# for -- which is exactly what happened.
+BDIR := $(BUILD)/$(RECIPE)/vmxbooter-$(KVER)
 
 # guest_img.S does `.incbin "bzImage"` relative to its own directory, so the
 # kernel image is staged next to it rather than referenced by an absolute path.
