@@ -8,7 +8,7 @@
 # See README.md for the pipeline and for how this differs from a normal distro.
 
 RECIPE ?= shell
-KVER   ?= 5.15.107
+KVER   ?= 6.6.155
 JOBS   ?= $(shell nproc)
 CC     ?= gcc
 
@@ -91,7 +91,7 @@ $(MANIFEST): $(IMG)
 	@{ \
 	  echo "recipe:      $(RECIPE)"; \
 	  echo "description: $(RECIPE_DESC)"; \
-	  echo "kernel:      $(KVER)$(if $(PATCHES), + $(words $(PATCHES)) patches, (unpatched))"; \
+	  echo "kernel:      $(KVER) (unmodified upstream)"; \
 	  echo "busybox:     $(BB_VER)"; \
 	  echo "programs:    $(if $(RECIPE_PROGRAMS),$(RECIPE_PROGRAMS),none)"; \
 	  echo "modules:     $(if $(RECIPE_MODULES),$(RECIPE_MODULES),none)"; \

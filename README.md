@@ -2,9 +2,9 @@
 
 This repo builds the Linux image that Composite's `simple_vmm` component boots as
 a guest. It is an **overlay**: it carries a small bootloader, three kernel
-patches, a root filesystem, and some benchmark programs, and it builds them
-against a *stock* kernel tarball it downloads itself. There is no kernel fork
-here.
+a root filesystem, and some benchmark programs, and it builds them against a
+*stock* kernel tarball it downloads itself. There is no kernel fork here, and no
+kernel patches.
 
 ```
 make list                    # what images can I build?
@@ -70,66 +70,36 @@ branch so the same image can boot under plain QEMU without Composite.
 | **Root fs** | ext4/btrfs partition populated by a package manager | One static BusyBox binary, its symlinks, and a few static benchmark binaries — a few MB gzipped |
 | **PID 1** | systemd: services, getty, network, logging | A shell script that mounts three pseudo-filesystems, runs one benchmark, and idles |
 | **Linking** | Dynamic, glibc, `/lib`, `ld.so` | Everything static. There is no dynamic loader in the image |
-| **Console** | VT + getty + tty layer | A single `uart8250` serial port at `0x3f8`, plus a patch routing fd 0/1 writes straight to `printk` |
+| **Console** | VT + getty + tty layer | A single `uart8250` serial port at `0x3f8`; no VT, no getty |
 | **Kernel** | Hundreds of drivers, modules everywhere, initrd for storage | Near-monolithic; modules on only for the benchmark `.ko`s |
 | **Boot artifact** | `bzImage` + `initrd` on an ESP | A flat multiboot2 blob, `.incbin`'d into a userspace VMM component |
 | **SMP** | All cores | One vCPU by default (`NUM_CPU 1` in `kmain.c`) |
 
-### There are no kernel patches
+### The kernel is unmodified
 
-The kernel is built from an unmodified upstream tarball. `patches/` is empty,
-and both 5.15.107 and 6.6.155 boot from the same source with no changes.
+The kernel is built from an unmodified upstream tarball. There are no patches,
+and nothing in this repo edits kernel source.
 
-It did not start that way — there were three patches, and what each turned out
-to be is worth recording, because none of them was really a kernel bug:
+The loader embeds the full **bzImage** and reads what it needs from the setup
+header rather than assuming it: `setup_sects` to locate the protected-mode
+kernel, `init_size` from offset `0x260` to size the memory it must clear and
+hand over, and the whole header copied into `boot_params` so the boot protocol
+version comes from the kernel itself. It enters at `pm_kernel + 0x200`, which
+`boot.rst` specifies as the 64-bit entry point.
 
-**`vmlinux.lds.S` — folded `.bss` and `.pgtable` into `.data`.** The effect was
-to make `objcopy -O binary` materialise those regions as zeros inside the flat
-image, so the loader's copy loop wrote zeros over them. The actual problem is
-that we enter at `startup_64` (`+0x200`) and therefore skip `startup_32`, which
-is the only code that zeroes the page-table area (`rep stosl` over
-`BOOT_INIT_PGT_SIZE` in `compressed/head_64.S`); `alloc_pgt_page()` in
-`compressed/ident_map_64.c` hands out pages without clearing them. **Replaced
-by** `kmain.c` zeroing the whole `init_size` window before loading — which
-covers `.bss`, `.pgtable` and anything else, on any kernel version.
+Because we enter at `startup_64` we skip `startup_32`, which on a normal boot is
+what clears the decompressor's page-table area — `alloc_pgt_page()` in
+`compressed/ident_map_64.c` hands out pages without zeroing them. So `kmain.c`
+zeroes the whole `init_size` window before loading. That is the one thing the
+loader must do that a conventional bootloader gets for free.
 
-**`i8237.c` — returned early from `i8237A_init_ops()`.** The VMM `VM_PANIC`s on
-any unhandled I/O port, so probing the legacy DMA controller killed the guest.
-Upstream already handles absent hardware: `if (dma_inb(DMA_PAGE_0) == 0xFF)
-return -ENODEV;`, because real x86 returns `0xFF` for unimplemented ports.
-**Replaced by** `# CONFIG_ISA_DMA_API is not set`, since
-`obj-$(CONFIG_ISA_DMA_API) += i8237.o` means the file is then never compiled.
-
-**`fs/read_write.c` — routed fd 0/1 writes to `printk`.** Unnecessary: the guest
-brings up the tty layer normally (`serial8250: ttyS0 at I/O 0x3f8 (irq = 4) is a
-16550A`). It was also harmful — running `dmesg` panicked the guest with
-`Kernel panic - not syncing: too many characters`, its own `panic()` on any
-write of 256 bytes or more. **Replaced by** deleting it.
-
-### The loader reads the kernel, rather than assuming things about it
-
-`kmain.c` used to hardcode `init_size = 36MB`, a protocol version of `0x0215`,
-and a hand-assembled `HdrS` signature. It now embeds the full **bzImage** and
-reads the setup header: `setup_sects` to locate the protected-mode kernel,
-`init_size` from offset `0x260`, and the whole header copied into `boot_params`.
-
-The hardcoded values were wrong in ways that happened not to matter: 5.15.107
-publishes `init_size` of 19 MB and 6.6.155 publishes 22 MB, against a hardcoded
-36 MB that was simply generous; and the kernel reports protocol `0x020f` (2.15),
-not the `0x0215` (2.21) the loader was claiming on its behalf.
-
-The `+0x200` entry offset is kept as a constant because it is *stable protocol*,
-not a version detail: `boot.rst` specifies the 64-bit entry as "64-bit kernel
-plus 0x200", and `head_64.S` places `startup_64` behind a literal `.org 0x200`.
-
-`vmxbooter/boot_protocol.h` defines the boot-protocol structures locally rather
-than including `<asm/bootparam.h>`. Pulling kernel-internal headers into a
-freestanding `-nostdinc` build is version-fragile — 6.6's chain reaches
-`asm/rwonce.h`, which needs compiler attributes we do not have, where 5.15's did
-not. The layouts are an ABI, identical in both versions, and every offset is
-`_Static_assert`-ed, so a kernel that ever changed one breaks the build loudly
-instead of corrupting the zero page silently. GRUB, systemd-boot and kexec all
-carry their own copies for the same reason.
+`vmxbooter/boot_protocol.h` defines the boot-protocol structures locally instead
+of including `<asm/bootparam.h>`. Kernel-internal headers do not survive a
+freestanding `-nostdinc` build across versions — 6.6's chain reaches
+`asm/rwonce.h`, which needs compiler attributes we do not have. The layouts are
+an ABI and every offset is `_Static_assert`-ed, so a kernel that ever changed one
+breaks the build loudly rather than corrupting the zero page silently. GRUB,
+systemd-boot and kexec all carry their own copies for the same reason.
 
 ## 4. Recipes
 
@@ -144,7 +114,7 @@ fragment    = "net.config"              # optional kernel config fragment
 ```
 
 `make image RECIPE=vmexit-bench` writes `out/vmlinux-vmexit-bench.img` and a
-`.manifest` beside it recording the kernel version and patch count, BusyBox
+`.manifest` beside it recording the kernel version, BusyBox
 version, program and module lists, config and initramfs hashes, image hash and
 size, and `git describe` of this repo.
 
@@ -159,9 +129,8 @@ banner, `gzip -n` omits its own timestamp, and the archive is packed in sorted
 order with uid/gid 0 and `cpio --reproducible`.
 
 Use **`make clean-all`** to test this. Plain `make clean` keeps `build/busybox-*`
-because rebuilding it is slow — which means it cannot detect nondeterminism in
-BusyBox's own build, and BusyBox compiles its build time into a banner string.
-That hid a real difference until the same recipe was built on a second machine.
+because rebuilding it is slow, which means it cannot detect nondeterminism in
+BusyBox's own build — and BusyBox compiles its build time into a banner string.
 
 This matters because the manifest records an image hash. Without it, rebuilding
 an unchanged recipe produces a different hash, and anyone comparing hashes
@@ -241,11 +210,10 @@ every boot log and it is expected:
 Warning: unable to open an initial console.
 ```
 
-PID 1 therefore starts with no stdin, stdout or stderr. `echo` still appears to
-work — but only because patch 0003 routes fd 1 to `printk`. An interactive shell
-inherits a closed stdin, reads EOF immediately, exits, and the kernel panics
-with `Attempted to kill init`. So `/init` reopens the console explicitly once
-devtmpfs has created the node:
+PID 1 therefore starts with no stdin, stdout or stderr. An interactive shell
+would inherit a closed stdin, read EOF immediately, exit, and the kernel would
+panic with `Attempted to kill init`. So `/init` reopens the console explicitly
+once devtmpfs has created the node:
 
 ```sh
 exec 0</dev/console 1>/dev/console 2>/dev/console
@@ -305,16 +273,15 @@ follows the major version, so 5.x and 6.x both work.
 
 Build directories and output filenames both carry the version
 (`out/vmlinux-shell-6.6.155.img`), so two versions of one recipe cannot
-overwrite each other — an earlier iteration of this did exactly that, and
-produced an ISO that booted 5.15.107 when asked for 6.6.
+overwrite each other.
 
-**Verified:** 5.15.107 and 6.6.155 both build and boot from unmodified sources.
+**Verified:** 6.6.155 (the default) and 5.15.107 both build and boot. 5.15.107
+is kept because it is what Composite's guest currently runs.
 
-**Out-of-tree modules are the part that actually drifts.** The kernel patches are
-gone, but `programs/modules/*.c` link against internal kernel APIs, and those do
-change: `class_create()` lost its `owner` argument in 6.4, which broke both
-benchmark modules on 6.6 until they were guarded on `LINUX_VERSION_CODE`. Expect
-this, not patch rebasing, to be the recurring cost of a version bump.
+**Out-of-tree modules are the part that drifts.** `programs/modules/*.c` link
+against internal kernel APIs, and those change: `class_create()` lost its `owner`
+argument in 6.4, so both benchmark modules are guarded on `LINUX_VERSION_CODE`.
+Expect this to be the recurring cost of a version bump.
 
 What could still need work on a much newer kernel: the guest memory layout in
 `kmain.c` (`GUEST_LOAD_BASE`, `GUEST_RAM_SIZE`) is our choice rather than the
@@ -329,10 +296,9 @@ that handled. See `integration/README.md`.
 ```
 Makefile              entry point: image / run / install / list / clean
 mk/fetch.mk           checksum-verified downloads
-mk/kernel.mk          stock source + patches, configured and built out-of-tree
+mk/kernel.mk          stock kernel source, configured and built out-of-tree
 mk/initramfs.mk       BusyBox + rootfs overlay + programs + modules -> cpio.gz
 mk/booter.mk          loader.S + kmain.c + embedded kernel -> vmlinux.img
-patches/              the three kernel patches, each with its rationale
 vmxbooter/            loader.S, kmain.c, linker.ld, multiboot2.h, build_iso.sh
 configs/              vmxbooter_defconfig + fragments/
 rootfs/               TRACKED root filesystem overlay: init, etc/inittab

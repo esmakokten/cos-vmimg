@@ -24,24 +24,11 @@ ifeq ($(LINUX_SHA256),)
 $(error No sha256 recorded for kernel $(KVER). Add LINUX_SHA256_$(KVER) to mk/kernel.mk, taking the value from https://cdn.kernel.org/pub/linux/kernel/v$(KVER_MAJOR).x/sha256sums.asc)
 endif
 
-PATCHES := $(sort $(wildcard $(TOP)/patches/*.patch))
-
-# Re-extract when the *set* of patches changes, not just their contents.
-# Removing a patch leaves the survivors older than the .patched stamp, so a
-# plain prerequisite list keeps a stale, still-patched source tree and the build
-# silently applies patches that are no longer in the repo.
-PATCH_LIST := $(BUILD)/.patch-list
-$(shell mkdir -p $(BUILD);         echo "$(notdir $(PATCHES))" | cmp -s - $(PATCH_LIST)         || echo "$(notdir $(PATCHES))" > $(PATCH_LIST))
-
-$(LINUX_SRC)/.patched: $(PATCHES) $(PATCH_LIST) | $(BUILD)
+$(LINUX_SRC)/.extracted: | $(BUILD)
 	$(call fetch_verify,$(LINUX_TARBALL),$(LINUX_URL),$(LINUX_SHA256),)
 	@rm -rf $(LINUX_SRC)
 	@echo "  [TAR]   $(LINUX_TARBALL)"
 	@tar -xf $(DL)/$(LINUX_TARBALL) -C $(BUILD)
-	@for p in $(PATCHES); do \
-		echo "  [PATCH] $$(basename $$p)"; \
-		patch -p1 -d $(LINUX_SRC) -i $$p >/dev/null; \
-	done
 	@touch $@
 
 # --- per-recipe kernel configuration -----------------------------------------
@@ -55,7 +42,7 @@ $(LINUX_SRC)/.patched: $(PATCHES) $(PATCH_LIST) | $(BUILD)
 # dependency here would be circular. CONFIG_INITRAMFS_SOURCE is set to the
 # archive's future path; kbuild only needs the file to exist at build time, and
 # $(VMLINUX_BIN) below depends on it, which is what actually enforces the order.
-$(KBUILD)/.config: $(LINUX_SRC)/.patched $(TOP)/configs/vmxbooter_defconfig
+$(KBUILD)/.config: $(LINUX_SRC)/.extracted $(TOP)/configs/vmxbooter_defconfig
 	@mkdir -p $(KBUILD)
 	@echo "  [CONF]  vmxbooter_defconfig"
 	@# Copied here, not at extraction time: otherwise editing the defconfig has

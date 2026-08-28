@@ -93,10 +93,10 @@ per-access; implement them as a small bitmap or hash before applying. Build with
 `-DVMM_STRICT_IO` to restore the panic when you want unexpected accesses to be
 loud.
 
-### Why this matters more than the kernel-side work
+### Why this still matters
 
-The kernel patches are now gone and 5.15.107 and 6.6.155 both boot unmodified.
-But that was achieved partly by *avoiding* the probes — `# CONFIG_ISA_DMA_API is
-not set` stops i8237 being compiled rather than making the probe survivable. A
-kernel that probes something we have not thought to disable will still die. This
-patch is what makes that a log line instead of a panic.
+The guest kernel is unmodified today partly because we *avoid* the probes —
+`# CONFIG_ISA_DMA_API is not set` stops i8237 being compiled rather than making
+the probe survivable. A kernel that probes something we have not thought to
+disable will still die. This patch is what makes that a log line instead of a
+panic.
