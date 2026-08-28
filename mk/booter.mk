@@ -48,9 +48,16 @@ $(BDIR)/kmain.o: $(TOP)/vmxbooter/kmain.c $(KBUILD)/.config | $(BDIR)
 $(BDIR):
 	@mkdir -p $@
 
+# linker.ld places the 32-bit entry stub with `loader.o(.text)`, which is a
+# filename *pattern* matched against the input names as spelled on the command
+# line. Absolute paths do not match it, and ld then tries to open "loader.o" as
+# a file and fails. So stage the script beside the objects and link from there
+# with bare names, exactly as the original in-tree build did -- the section
+# layout this produces is what kmain.c's load addresses assume.
 $(BDIR)/kernel.img: $(TOP)/vmxbooter/linker.ld $(BDIR)/loader.o $(BDIR)/guest_img.o $(BDIR)/kmain.o
 	@echo "  [LD]    kernel.img"
-	@$(BOOTER_LD) -T $< $(BDIR)/loader.o $(BDIR)/guest_img.o $(BDIR)/kmain.o -o $@
+	@cp $(TOP)/vmxbooter/linker.ld $(BDIR)/linker.ld
+	@cd $(BDIR) && $(BOOTER_LD) -T linker.ld loader.o guest_img.o kmain.o -o kernel.img
 
 $(IMG): $(BDIR)/kernel.img | $(OUT)
 	@echo "  [IMG]   $@"

@@ -24,6 +24,19 @@ if [ ! -c /dev/console ]; then
 	exit 1
 fi
 
+# Reattach stdio.
+#
+# The kernel opens /dev/console for PID 1 *before* running us, at which point
+# /dev is still the empty directory baked into the initramfs -- hence the
+# "unable to open an initial console" warning in the boot log. PID 1 therefore
+# starts with no stdin, stdout or stderr.
+#
+# echo still appears to work, but only because patch 0003 routes fd 1 to printk;
+# an interactive shell inherits a closed stdin, reads EOF immediately, exits,
+# and the kernel panics with "Attempted to kill init". Now that devtmpfs has
+# given us a real console node, open it properly.
+exec 0</dev/console 1>/dev/console 2>/dev/console
+
 if [ ! -x /recipe-init ]; then
 	echo "FATAL: /recipe-init missing or not executable."
 	echo "       The image was built without a recipe payload."
