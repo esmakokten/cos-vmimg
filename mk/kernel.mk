@@ -50,6 +50,23 @@ endif
 
 VMLINUX_BIN := $(KBUILD)/arch/x86/boot/vmlinux.bin
 
-$(VMLINUX_BIN): $(KBUILD)/.config $(INITRAMFS)
+# --- phase one: scaffold -------------------------------------------------------
+# Builds vmlinux and the in-tree modules against a placeholder initramfs, purely
+# to produce a populated Module.symvers for external modules to link against.
+# Only recipes that actually carry modules need this; for the rest the initramfs
+# has no dependency on the kernel and the scaffold is a no-op stamp.
+$(KBUILD)/.scaffold: $(KBUILD)/.config
+ifneq ($(RECIPE_MODULES),)
+	@mkdir -p $(dir $(INITRAMFS))
+	@if [ ! -f $(INITRAMFS) ]; then 		echo "  [KERN]  scaffold build (for Module.symvers)"; 		: | cpio --quiet -o -H newc | gzip -9 > $(INITRAMFS); 	fi
+	@$(MAKE) -s -C $(LINUX_SRC) O=$(abspath $(KBUILD)) -j$(JOBS) bzImage modules
+	@test -s $(KBUILD)/Module.symvers || { 		echo "ERROR: Module.symvers is empty after the scaffold build."; 		echo "       External modules would link with unresolved symbols."; exit 1; }
+endif
+	@touch $@
+
+# --- phase two: the real kernel ------------------------------------------------
+# $(INITRAMFS) here is the real archive, modules included. For a module-carrying
+# recipe this is an incremental relink over the scaffold, not a second full build.
+$(VMLINUX_BIN): $(KBUILD)/.scaffold $(INITRAMFS)
 	@echo "  [KERN]  building $(KVER) for recipe '$(RECIPE)'"
 	@$(MAKE) -s -C $(LINUX_SRC) O=$(abspath $(KBUILD)) -j$(JOBS) bzImage

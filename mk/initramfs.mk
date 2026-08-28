@@ -31,7 +31,9 @@ $(BB_SRC)/busybox: | $(BUILD)
 		exit 1; }
 
 RECIPE_PROG_BINS := $(patsubst %.c,$(RFS)/programs/%,$(RECIPE_PROGRAMS))
-RECIPE_MOD_OBJS  := $(patsubst %.c,%.ko,$(RECIPE_MODULES))
+# Kbuild's obj-m takes the object name, not the module name: obj-m += foo.o
+# produces foo.ko.
+RECIPE_MOD_OBJS  := $(patsubst %.c,%.o,$(RECIPE_MODULES))
 
 $(RFS)/.busybox-installed: $(BB_SRC)/busybox
 	@rm -rf $(RFS)
@@ -53,15 +55,32 @@ $(RFS)/programs/%: $(TOP)/programs/%.c $(RFS)/.overlay
 	@echo "  [CC]    $* (static)"
 	@$(CC) -static -O2 -Wall -o $@ $< -lm
 
-# Modules are built against the same configured kernel the image will run.
-$(RFS)/.modules: $(RFS)/.overlay $(KBUILD)/.config
+# Modules are built against the very kernel the image will run.
+#
+# This needs a two-phase kernel build, because the dependency is genuinely
+# cyclic: the .ko files go into the initramfs, and the initramfs is linked into
+# the kernel. Phase one ($(KBUILD)/.scaffold, in kernel.mk) builds vmlinux and
+# the in-tree modules against a placeholder initramfs, which is what produces a
+# populated Module.symvers. Without it modpost has no built-in symbol table and
+# silently emits .ko files with every external symbol unresolved -- they build
+# fine and then fail to insmod. Phase two relinks the kernel around the real
+# initramfs and is incremental.
+$(RFS)/.modules: $(RFS)/.overlay $(KBUILD)/.scaffold
 ifneq ($(RECIPE_MODULES),)
 	@mkdir -p $(RFS)/modules $(BUILD)/$(RECIPE)/modsrc
 	@cp $(addprefix $(TOP)/programs/modules/,$(RECIPE_MODULES)) $(BUILD)/$(RECIPE)/modsrc/
-	@printf '%s\n' $(addprefix obj-m += ,$(RECIPE_MOD_OBJS)) > $(BUILD)/$(RECIPE)/modsrc/Kbuild
+	@: > $(BUILD)/$(RECIPE)/modsrc/Kbuild
+	@for o in $(RECIPE_MOD_OBJS); do \
+		echo "obj-m += $$o" >> $(BUILD)/$(RECIPE)/modsrc/Kbuild; \
+	done
 	@echo "  [KMOD]  $(RECIPE_MODULES)"
 	@$(MAKE) -s -C $(LINUX_SRC) O=$(abspath $(KBUILD)) \
-		M=$(abspath $(BUILD)/$(RECIPE)/modsrc) modules
+		M=$(abspath $(BUILD)/$(RECIPE)/modsrc) modules 2>&1 \
+		| tee $(BUILD)/$(RECIPE)/modsrc/modpost.log
+	@if grep -q 'undefined!' $(BUILD)/$(RECIPE)/modsrc/modpost.log; then \
+		echo "ERROR: modules have unresolved symbols and would fail to insmod:"; \
+		grep 'undefined!' $(BUILD)/$(RECIPE)/modsrc/modpost.log; \
+		exit 1; fi
 	@cp $(BUILD)/$(RECIPE)/modsrc/*.ko $(RFS)/modules/
 endif
 	@touch $@
