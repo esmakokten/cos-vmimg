@@ -75,21 +75,61 @@ branch so the same image can boot under plain QEMU without Composite.
 | **Boot artifact** | `bzImage` + `initrd` on an ESP | A flat multiboot2 blob, `.incbin`'d into a userspace VMM component |
 | **SMP** | All cores | One vCPU by default (`NUM_CPU 1` in `kmain.c`) |
 
-### The three kernel patches
+### There are no kernel patches
 
-The delta against stock `linux-5.15.107` is three files, ~30 lines. Each is in
-`patches/` with its rationale in the header:
+The kernel is built from an unmodified upstream tarball. `patches/` is empty,
+and both 5.15.107 and 6.6.155 boot from the same source with no changes.
 
-- **0001 `x86/boot`** — folds `.bss` and `.pgtable` into `.data` in
-  `vmlinux.lds.S`, so `objcopy -O binary` produces the contiguous layout that
-  `kmain.c`'s load arithmetic assumes. Load-bearing for this boot path;
-  meaningless for a normally-booted kernel.
-- **0002 `x86/i8237`** — returns early from `i8237A_init_ops()`. The VMM does not
-  emulate the legacy 8237 DMA controller.
-- **0003 `fs/read_write`** — routes `write()` on fd 0 and 1 directly to `printk`,
-  bypassing the tty layer, so a static init's `printf()` reaches the serial
-  console. **This is a debugging shortcut**: it `panic()`s on writes ≥ 256 bytes
-  and discards `copy_from_user`'s return value. See "Migration notes".
+It did not start that way — there were three patches, and what each turned out
+to be is worth recording, because none of them was really a kernel bug:
+
+**`vmlinux.lds.S` — folded `.bss` and `.pgtable` into `.data`.** The effect was
+to make `objcopy -O binary` materialise those regions as zeros inside the flat
+image, so the loader's copy loop wrote zeros over them. The actual problem is
+that we enter at `startup_64` (`+0x200`) and therefore skip `startup_32`, which
+is the only code that zeroes the page-table area (`rep stosl` over
+`BOOT_INIT_PGT_SIZE` in `compressed/head_64.S`); `alloc_pgt_page()` in
+`compressed/ident_map_64.c` hands out pages without clearing them. **Replaced
+by** `kmain.c` zeroing the whole `init_size` window before loading — which
+covers `.bss`, `.pgtable` and anything else, on any kernel version.
+
+**`i8237.c` — returned early from `i8237A_init_ops()`.** The VMM `VM_PANIC`s on
+any unhandled I/O port, so probing the legacy DMA controller killed the guest.
+Upstream already handles absent hardware: `if (dma_inb(DMA_PAGE_0) == 0xFF)
+return -ENODEV;`, because real x86 returns `0xFF` for unimplemented ports.
+**Replaced by** `# CONFIG_ISA_DMA_API is not set`, since
+`obj-$(CONFIG_ISA_DMA_API) += i8237.o` means the file is then never compiled.
+
+**`fs/read_write.c` — routed fd 0/1 writes to `printk`.** Unnecessary: the guest
+brings up the tty layer normally (`serial8250: ttyS0 at I/O 0x3f8 (irq = 4) is a
+16550A`). It was also harmful — running `dmesg` panicked the guest with
+`Kernel panic - not syncing: too many characters`, its own `panic()` on any
+write of 256 bytes or more. **Replaced by** deleting it.
+
+### The loader reads the kernel, rather than assuming things about it
+
+`kmain.c` used to hardcode `init_size = 36MB`, a protocol version of `0x0215`,
+and a hand-assembled `HdrS` signature. It now embeds the full **bzImage** and
+reads the setup header: `setup_sects` to locate the protected-mode kernel,
+`init_size` from offset `0x260`, and the whole header copied into `boot_params`.
+
+The hardcoded values were wrong in ways that happened not to matter: 5.15.107
+publishes `init_size` of 19 MB and 6.6.155 publishes 22 MB, against a hardcoded
+36 MB that was simply generous; and the kernel reports protocol `0x020f` (2.15),
+not the `0x0215` (2.21) the loader was claiming on its behalf.
+
+The `+0x200` entry offset is kept as a constant because it is *stable protocol*,
+not a version detail: `boot.rst` specifies the 64-bit entry as "64-bit kernel
+plus 0x200", and `head_64.S` places `startup_64` behind a literal `.org 0x200`.
+
+`vmxbooter/boot_protocol.h` defines the boot-protocol structures locally rather
+than including `<asm/bootparam.h>`. Pulling kernel-internal headers into a
+freestanding `-nostdinc` build is version-fragile — 6.6's chain reaches
+`asm/rwonce.h`, which needs compiler attributes we do not have, where 5.15's did
+not. The layouts are an ABI, identical in both versions, and every offset is
+`_Static_assert`-ed, so a kernel that ever changed one breaks the build loudly
+instead of corrupting the zero page silently. GRUB, systemd-boot and kexec all
+carry their own copies for the same reason.
 
 ## 4. Recipes
 
@@ -113,10 +153,15 @@ size, and `git describe` of this repo.
 
 ### Reproducibility
 
-Builds are byte-reproducible: `SOURCE_DATE_EPOCH` fixes both the kernel's build
-timestamp and the mtimes in the cpio, `gzip -n` omits its own, and the archive is
-packed in sorted order with uid/gid 0. Two clean builds of the same recipe on the
-same toolchain produce the same image.
+Builds are byte-reproducible: `SOURCE_DATE_EPOCH` fixes the kernel's build
+timestamp and the mtimes in the cpio, `TZ=UTC` pins how BusyBox renders its
+banner, `gzip -n` omits its own timestamp, and the archive is packed in sorted
+order with uid/gid 0 and `cpio --reproducible`.
+
+Use **`make clean-all`** to test this. Plain `make clean` keeps `build/busybox-*`
+because rebuilding it is slow — which means it cannot detect nondeterminism in
+BusyBox's own build, and BusyBox compiles its build time into a banner string.
+That hid a real difference until the same recipe was built on a second machine.
 
 This matters because the manifest records an image hash. Without it, rebuilding
 an unchanged recipe produces a different hash, and anyone comparing hashes
@@ -247,26 +292,31 @@ This works today only because a previous build left an image behind; a genuinely
 fresh tree embeds whatever is there, or fails. The image should be an explicit
 prerequisite of the simple_vmm object rather than relying on `private` ordering.
 
-## 8. Migration notes — moving to a newer kernel
+## 8. Using a different kernel version
 
-Changing `KVER` gets you a different stock tarball, but three things are
-genuinely version-sensitive and are the real cost of a bump:
+```sh
+make image RECIPE=shell KVER=6.6.155
+```
 
-1. **`kmain.c` hardcodes the 5.15-era boot protocol**: the guest entry point at
-   physical `0x900200`, `boot_params.hdr.init_size = 36 MB`, a 60 MB e820 map,
-   and `boot_params.hdr.version = 0x0215`. These track the decompressor layout
-   and must be *re-derived*, not re-pointed.
-2. **Patch 0001 rewrites `vmlinux.lds.S`**, which upstream churns between
-   releases. Expect to rebase it.
-3. **Patch 0003 may be droppable.** With `CONFIG_DEVTMPFS` giving a real
-   `/dev/console` and the kernel booted `console=uart8250,io,0x3f8`, the
-   `printk` hijack on fd 0/1 may no longer be needed. Dropping it would remove a
-   `panic()` and a discarded `copy_from_user` return from the write path. This is
-   worth an experiment, but it is a **follow-up** — it is kept enabled by default
-   because nothing has yet demonstrated the console works without it.
+Adding a version means adding its checksum to the table in `mk/kernel.mk`, taken
+from `cdn.kernel.org/pub/linux/kernel/v<major>.x/sha256sums.asc`. The build
+refuses to fetch a version it has no recorded checksum for. The URL directory
+follows the major version, so 5.x and 6.x both work.
 
-Also note the old fork had deleted 21 non-x86 architectures from its tree. Since
-this repo builds from the stock tarball, that divergence is simply gone.
+Build directories and output filenames both carry the version
+(`out/vmlinux-shell-6.6.155.img`), so two versions of one recipe cannot
+overwrite each other — an earlier iteration of this did exactly that, and
+produced an ISO that booted 5.15.107 when asked for 6.6.
+
+**Verified:** 5.15.107 and 6.6.155 both build and boot from unmodified sources.
+
+What could still need work on a much newer kernel: the guest memory layout in
+`kmain.c` (`GUEST_LOAD_BASE`, `GUEST_RAM_SIZE`) is our choice rather than the
+kernel's, and the build will refuse to boot a kernel whose `init_size` does not
+fit — `kmain.c` checks this explicitly rather than letting it fail obscurely.
+The VMM's device emulation is the other limit: it panics on I/O ports and MMIO
+regions it does not implement, so a kernel that probes something new will need
+that handled. See `integration/README.md`.
 
 ## 9. Layout
 
