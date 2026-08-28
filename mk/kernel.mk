@@ -10,7 +10,14 @@ LINUX_SRC     := $(BUILD)/linux-$(KVER)
 
 PATCHES := $(sort $(wildcard $(TOP)/patches/*.patch))
 
-$(LINUX_SRC)/.patched: $(PATCHES) | $(BUILD)
+# Re-extract when the *set* of patches changes, not just their contents.
+# Removing a patch leaves the survivors older than the .patched stamp, so a
+# plain prerequisite list keeps a stale, still-patched source tree and the build
+# silently applies patches that are no longer in the repo.
+PATCH_LIST := $(BUILD)/.patch-list
+$(shell mkdir -p $(BUILD);         echo "$(notdir $(PATCHES))" | cmp -s - $(PATCH_LIST)         || echo "$(notdir $(PATCHES))" > $(PATCH_LIST))
+
+$(LINUX_SRC)/.patched: $(PATCHES) $(PATCH_LIST) | $(BUILD)
 	$(call fetch_verify,$(LINUX_TARBALL),$(LINUX_URL),$(LINUX_SHA256),)
 	@rm -rf $(LINUX_SRC)
 	@echo "  [TAR]   $(LINUX_TARBALL)"
@@ -19,7 +26,6 @@ $(LINUX_SRC)/.patched: $(PATCHES) | $(BUILD)
 		echo "  [PATCH] $$(basename $$p)"; \
 		patch -p1 -d $(LINUX_SRC) -i $$p >/dev/null; \
 	done
-	@cp $(TOP)/configs/vmxbooter_defconfig $(LINUX_SRC)/arch/x86/configs/
 	@touch $@
 
 # --- per-recipe kernel configuration -----------------------------------------
@@ -36,6 +42,9 @@ $(LINUX_SRC)/.patched: $(PATCHES) | $(BUILD)
 $(KBUILD)/.config: $(LINUX_SRC)/.patched $(TOP)/configs/vmxbooter_defconfig
 	@mkdir -p $(KBUILD)
 	@echo "  [CONF]  vmxbooter_defconfig"
+	@# Copied here, not at extraction time: otherwise editing the defconfig has
+	@# no effect until the kernel tree happens to be re-extracted.
+	@cp $(TOP)/configs/vmxbooter_defconfig $(LINUX_SRC)/arch/x86/configs/
 	@$(MAKE) -s -C $(LINUX_SRC) O=$(abspath $(KBUILD)) vmxbooter_defconfig
 ifneq ($(RECIPE_FRAGMENT),)
 	@echo "  [CONF]  fragment $(RECIPE_FRAGMENT)"
