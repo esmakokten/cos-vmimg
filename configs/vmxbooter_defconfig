@@ -207,3 +207,12 @@ CONFIG_UNWINDER_FRAME_POINTER=y
 # Guest console: /dev populated by the kernel rather than by mknod in /init.
 #
 CONFIG_DEVTMPFS=y
+
+#
+# No legacy ISA DMA. arch/x86/kernel/Makefile has
+#   obj-$(CONFIG_ISA_DMA_API) += i8237.o
+# so unsetting this stops i8237.c being compiled at all, which is what lets us
+# drop the patch that made i8237A_init_ops() return early. The symbol is
+# 'bool "ISA-style DMA support" if (X86_64 && EXPERT)' and we set EXPERT=y, so
+# it is selectable. Nothing in these images uses ISA DMA.
+# CONFIG_ISA_DMA_API is not set
