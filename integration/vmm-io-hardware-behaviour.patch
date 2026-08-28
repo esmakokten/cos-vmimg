@@ -1,0 +1,111 @@
+Subject: [PATCH] simple_vmm: respond to unemulated devices the way hardware does
+
+The VMM currently kills the guest on any I/O port or MMIO access it does not
+explicitly emulate:
+
+    printc("port id:%x, sz:%d, dir:%d\n", port_id, access_sz, access_dir);
+    VM_PANIC(vcpu);
+
+That is why guest kernels needed patching. On real x86, a read from an
+unimplemented I/O port returns all-ones and a write is discarded; that is how
+drivers detect absent hardware. arch/x86/kernel/i8237.c already relies on it:
+
+    if (dma_inb(DMA_PAGE_0) == 0xFF)
+            return -ENODEV;
+
+Because the VMM panics instead, that probe killed the guest, and the kernel was
+patched to return early from i8237A_init_ops(). The same pressure produced the
+hardcoded list of serial ports at the top of io_handler(), marked
+"TODO: fix these io ports emulcation" -- ports 0x2f8/0x3e8/0x2e8, which are just
+serial ports 2, 3 and 4 being probed by the 8250 driver.
+
+Every new kernel version probes something new, so this generates a fresh hack
+each time. Behaving like hardware removes the whole class.
+
+MMIO gets the same treatment: reads outside an emulated region return zero and
+writes are dropped, rather than panicking.
+
+VMM_STRICT_IO restores the old behaviour for deliberate debugging. It is off by
+default -- the permissive path is the point -- but each distinct unhandled port
+or address is logged once so that genuinely unexpected accesses stay visible
+instead of being silently swallowed.
+
+---
+--- a/src/components/implementation/simple_vmm/vmm/vio.c
++++ b/src/components/implementation/simple_vmm/vmm/vio.c
+@@
+-	if (port_id == 0x3ff || port_id == 0x2f9 || port_id == 0x2fc || port_id == 0x2fb || port_id == 0x2fa || port_id == 0x2ff || port_id == 0x2f8 || port_id == 0x3e9 || port_id == 0x3ec || port_id == 0x3eb || port_id == 0x3ea || port_id == 0x3ef || port_id == 0x3e8
+-		 || port_id == 0x2e9 || port_id == 0x2ec || port_id == 0x2eb || port_id == 0x2ee) {
+-			/* TODO: fix these io ports emulcation */
+-			goto done;
+-	}
+ 	if (port_id <= SERIAL_PORT_MAX && port_id >= SERIAL_PORT_MIN) {
+ 		serial_handler(port_id, access_dir, access_sz, vcpu);
+ 		goto done;
+@@
+ 	case VPCI_MECHANISM_CONTROL_REG:
+ 		vpci_handler(port_id, access_dir, access_sz, vcpu);
+ 		goto done;
+ 	}
+ 
+-	printc("port id:%x, sz:%d, dir:%d\n", port_id, access_sz, access_dir);
+-	VM_PANIC(vcpu);
++	unhandled_port(port_id, access_dir, access_sz, vcpu);
+ done:
+ 	GOTO_NEXT_INST(regs);
+ 	
+ 	return;
+ }
+@@
++/*
++ * No device answers at this port. Real x86 floats the bus high on a read and
++ * drops a write, which is precisely how drivers probe for absent hardware.
++ */
++static void
++unhandled_port(u16_t port_id, int dir, int sz, struct vmrt_vm_vcpu *vcpu)
++{
++#ifdef VMM_STRICT_IO
++	printc("unhandled port %x sz:%d dir:%d\n", port_id, sz, dir);
++	VM_PANIC(vcpu);
++#else
++	if (!port_seen(port_id)) {
++		printc("vmm: no device at port %x (sz %d, %s); "
++		       "reads return all-ones\n",
++		       port_id, sz, dir == IO_IN ? "read" : "write");
++	}
++	if (dir == IO_IN) {
++		u32_t all_ones = (sz == IO_BYTE) ? 0xFFU
++		               : (sz == IO_WORD) ? 0xFFFFU : 0xFFFFFFFFU;
++
++		/* Preserve the untouched high bits of RAX, as the CPU would. */
++		if (sz == IO_BYTE)      vcpu->shared_region->ax = (vcpu->shared_region->ax & ~0xFFULL)   | all_ones;
++		else if (sz == IO_WORD) vcpu->shared_region->ax = (vcpu->shared_region->ax & ~0xFFFFULL) | all_ones;
++		else                    vcpu->shared_region->ax = all_ones;
++	}
++	/* Writes to nothing go nowhere. */
++#endif
++}
+--- a/src/components/implementation/simple_vmm/vmm/vmmio.c
++++ b/src/components/implementation/simple_vmm/vmm/vmmio.c
+@@
+ 	} else {
+-		VM_PANIC(vcpu);
++		/*
++		 * Unbacked physical address. Hardware returns zero for reads of
++		 * an unclaimed region and discards writes; panicking here means
++		 * any device the guest probes but we do not emulate is fatal.
++		 */
++#ifdef VMM_STRICT_IO
++		VM_PANIC(vcpu);
++#else
++		if (!mmio_addr_seen(gpa)) {
++			printc("vmm: unbacked mmio at %llx; reads return zero\n", gpa);
++		}
++		if (mmio_req->direction == ACRN_IOREQ_DIR_READ) {
++			mmio_req->value = 0;
++			(void)emulate_instruction(vcpu);
++		}
++		GOTO_NEXT_INST(regs);
++#endif
+ 	}
+ }
