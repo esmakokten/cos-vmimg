@@ -111,6 +111,18 @@ size, and `git describe` of this repo.
 **To add an image:** drop your `.c` in `programs/`, a payload script in
 `programs/scripts/`, and a recipe in `recipes/`. Nothing else.
 
+### Reproducibility
+
+Builds are byte-reproducible: `SOURCE_DATE_EPOCH` fixes both the kernel's build
+timestamp and the mtimes in the cpio, `gzip -n` omits its own, and the archive is
+packed in sorted order with uid/gid 0. Two clean builds of the same recipe on the
+same toolchain produce the same image.
+
+This matters because the manifest records an image hash. Without it, rebuilding
+an unchanged recipe produces a different hash, and anyone comparing hashes
+concludes something changed when nothing did. Set `SOURCE_DATE_EPOCH` to a real
+date if you want the guest's `uname -v` to carry one.
+
 `rootfs/init` is the generic PID 1 for every recipe: it mounts `/proc`, `/sys`
 and `/dev`, verifies `/dev/console` exists, and `exec`s `/recipe-init`.
 
@@ -141,6 +153,17 @@ Related fixes carried over from the old build:
   `cd -`, which swallowed the exit status: a failed build reported success and
   the cpio was packed from a stale tree. Every `|| true` and `|| :` on the build
   path is gone.
+- **Silently broken kernel modules.** The old build ran `make ... modules` with
+  only `bzImage` built, so `Module.symvers` was empty and `modpost` produced
+  `.ko` files with every external symbol unresolved. They compiled fine and would
+  have failed at `insmod`. The `.ko`s were then copied with
+  `2>/dev/null || true`, so nothing reported it. The build now runs a scaffold
+  phase to populate `Module.symvers` and **fails** if `modpost` says
+  `undefined!`.
+- **Linker script paths.** `linker.ld` selects the entry stub with
+  `loader.o(.text)`, a filename *pattern* that only matches when `ld` is invoked
+  with bare object names. The old build worked only by virtue of running in that
+  directory; this one stages the script beside the objects and links from there.
 - **Build ordering.** The initramfs has to exist before the kernel embeds it, and
   `vmlinux.bin` before `loader.o` links it. Neither was expressed as a
   dependency, so `-j` could race. Both are real prerequisites now.
@@ -162,6 +185,37 @@ which meant a genuinely broken config looked like a working one.
 it "does not affect initramfs based booting, here the devtmpfs filesystem always
 needs to be mounted manually" — which is all we ever do, so enabling it would be
 inert and misleading.
+
+### Why `/init` reopens the console
+
+The kernel opens `/dev/console` for PID 1 *before* running `/init`, when `/dev`
+is still the empty directory baked into the initramfs. You will see this in
+every boot log and it is expected:
+
+```
+Warning: unable to open an initial console.
+```
+
+PID 1 therefore starts with no stdin, stdout or stderr. `echo` still appears to
+work — but only because patch 0003 routes fd 1 to `printk`. An interactive shell
+inherits a closed stdin, reads EOF immediately, exits, and the kernel panics
+with `Attempted to kill init`. So `/init` reopens the console explicitly once
+devtmpfs has created the node:
+
+```sh
+exec 0</dev/console 1>/dev/console 2>/dev/console
+```
+
+This is worth knowing before adding a payload that expects a terminal.
+
+### devtmpfs also creates module device nodes
+
+The old `cosvmx_init_benchmark.sh` carried about forty lines that `mknod`'d
+`/dev/kvm-microbench` and `/dev/kvm-fake` by scraping major numbers out of
+`/proc/devices`, with hardcoded fallbacks to 253 and 254. With
+`CONFIG_DEVTMPFS=y` none of that is needed — the nodes appear when the modules
+register their devices. `run_vmexit_bench.sh` just checks they exist and fails
+loudly if they do not.
 
 ## 7. Integrating with Composite
 

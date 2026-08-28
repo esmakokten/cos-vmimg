@@ -41,7 +41,12 @@ $(BDIR)/loader.o: $(TOP)/vmxbooter/loader.S | $(BDIR)
 	@echo "  [AS]    loader.o"
 	@$(BOOTER_CC) -c $(BOOTER_INC) -o $@ $<
 
-$(BDIR)/kmain.o: $(TOP)/vmxbooter/kmain.c $(KBUILD)/.config | $(BDIR)
+# Depends on the built kernel, not merely on .config: kmain.c includes
+# <asm/bootparam.h>, which pulls in generated uapi headers that only exist after
+# the kernel's archprepare step has run. With .config as the prerequisite this
+# compiles fine serially -- the kernel build always happens to precede it -- and
+# fails under -j with "asm/types.h: No such file or directory".
+$(BDIR)/kmain.o: $(TOP)/vmxbooter/kmain.c $(VMLINUX_BIN) | $(BDIR)
 	@echo "  [CC]    kmain.o"
 	@$(BOOTER_CC) $(BOOTER_INC) $(BOOTER_CFLAGS) -c -o $@ $<
 

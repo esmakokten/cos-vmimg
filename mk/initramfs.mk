@@ -96,8 +96,16 @@ ifneq ($(RECIPE_MODULES),)
 INITRAMFS_DEPS += $(RFS)/.modules
 endif
 
+# Sorted names, uid/gid 0, a fixed mtime, and --reproducible so the same inputs
+# give the same archive byte for byte. gzip -n omits its own timestamp.
+#
+# --reproducible (renumber-inodes + ignore-devno) is the load-bearing one: the
+# newc format stores each file's real inode number, so without it a rebuilt
+# rootfs produces a different archive even when every file is identical -- and
+# since the archive is linked into vmlinux, that made the whole image differ.
 $(INITRAMFS): $(INITRAMFS_DEPS)
 	@echo "  [CPIO]  $@"
-	@cd $(RFS) && find . -print0 \
-		| cpio --null --quiet -o -H newc \
-		| gzip -9 > $(abspath $@)
+	@find $(RFS) -exec touch -h -d @$(SOURCE_DATE_EPOCH) {} +
+	@cd $(RFS) && find . | LC_ALL=C sort \
+		| cpio --quiet -o -H newc --owner 0:0 --reproducible \
+		| gzip -9n > $(abspath $@)

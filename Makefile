@@ -12,6 +12,15 @@ KVER   ?= 5.15.107
 JOBS   ?= $(shell nproc)
 CC     ?= gcc
 
+# Reproducible images. Without these the kernel bakes in a build timestamp and
+# the cpio bakes in file mtimes, so two builds of the same recipe differ and the
+# image hash in the manifest identifies nothing. Override SOURCE_DATE_EPOCH to
+# stamp a real date; the default keeps rebuilds comparable.
+SOURCE_DATE_EPOCH ?= 1700000000
+export KBUILD_BUILD_TIMESTAMP := $(shell date -u -d @$(SOURCE_DATE_EPOCH) 2>/dev/null)
+export KBUILD_BUILD_USER      := cos-vmimg
+export KBUILD_BUILD_HOST      := cos-vmimg
+
 TOP   := $(CURDIR)
 BUILD := $(TOP)/build
 DL    := $(BUILD)/dl
