@@ -15,8 +15,10 @@ LINUX_URL  := https://cdn.kernel.org/pub/linux/kernel/v$(KVER_MAJOR).x/$(LINUX_T
 # Adding a kernel version means adding a line here: the build refuses to fetch a
 # version it has no recorded checksum for rather than trusting whatever the
 # network returns.
-LINUX_SHA256_5.15.107 := 19370e769045681f52cceedb14ecda97e89b1b058133a0c8ad45d35ffbc5afa8
-LINUX_SHA256_6.1.186  := eeedc32bbf2448205aff50ee2760a4d87172cf8f8279c1e5930069ad36f6236e
+#
+# main carries the current kernel. Older lines are frozen as tags -- see the tag
+# kernel-5.15.107 -- rather than kept alongside, because a substantial kernel
+# jump is not expected to leave one branch working for every version.
 LINUX_SHA256_6.6.155  := 4e67a9263f2c19b070112109c9a282ee8e8ea49f1641e41faa5cca2c41654982
 
 LINUX_SHA256 := $(LINUX_SHA256_$(KVER))

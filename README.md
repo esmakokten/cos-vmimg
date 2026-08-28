@@ -271,12 +271,30 @@ from `cdn.kernel.org/pub/linux/kernel/v<major>.x/sha256sums.asc`. The build
 refuses to fetch a version it has no recorded checksum for. The URL directory
 follows the major version, so 5.x and 6.x both work.
 
+### Kernel lines are tags, not branches
+
+`main` carries **one** kernel: currently 6.6.155. Older lines are frozen as tags:
+
+| Tag | Kernel |
+|---|---|
+| `kernel-5.15.107` | 5.15.107 — the guest Composite's `simple_vmm` was developed against |
+
+A consumer that needs an older kernel pins the tag rather than following `main`.
+Moving forward is a deliberate submodule bump, not something that happens
+underneath you.
+
+This is deliberate: a substantial kernel jump can require real work — the loader
+already had to stop including kernel headers to build against 6.6, and
+out-of-tree modules needed a `LINUX_VERSION_CODE` guard when `class_create()`
+changed in 6.4. Expecting one branch to keep working across every version is not
+realistic, so old lines are frozen where they were verified.
+
 Build directories and output filenames both carry the version
 (`out/vmlinux-shell-6.6.155.img`), so two versions of one recipe cannot
 overwrite each other.
 
-**Verified:** 6.6.155 (the default) and 5.15.107 both build and boot. 5.15.107
-is kept because it is what Composite's guest currently runs.
+**Verified:** 6.6.155 builds and boots. 5.15.107 is verified at the
+`kernel-5.15.107` tag.
 
 **Out-of-tree modules are the part that drifts.** `programs/modules/*.c` link
 against internal kernel APIs, and those change: `class_create()` lost its `owner`
