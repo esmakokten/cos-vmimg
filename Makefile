@@ -43,6 +43,11 @@ endif
 include $(RECIPE_MK)
 
 RFS       := $(BUILD)/$(RECIPE)/rootfs
+# Build stamps live outside $(RFS). Two reasons: the cpio rule normalises mtimes
+# across everything in the rootfs for reproducibility, which would back-date the
+# stamps and make every target permanently out of date; and nothing that is not
+# part of the guest filesystem belongs in the guest filesystem.
+STAMPS    := $(BUILD)/$(RECIPE)/stamps
 KBUILD    := $(BUILD)/$(RECIPE)/kernel
 INITRAMFS := $(BUILD)/$(RECIPE)/initramfs.cpio.gz
 IMG       := $(OUT)/vmlinux-$(RECIPE).img

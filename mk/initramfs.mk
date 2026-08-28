@@ -35,22 +35,22 @@ RECIPE_PROG_BINS := $(patsubst %.c,$(RFS)/programs/%,$(RECIPE_PROGRAMS))
 # produces foo.ko.
 RECIPE_MOD_OBJS  := $(patsubst %.c,%.o,$(RECIPE_MODULES))
 
-$(RFS)/.busybox-installed: $(BB_SRC)/busybox
+$(STAMPS)/busybox-installed: $(BB_SRC)/busybox
 	@rm -rf $(RFS)
-	@mkdir -p $(RFS)
+	@mkdir -p $(RFS) $(STAMPS)
 	@$(MAKE) -s -C $(BB_SRC) install CONFIG_PREFIX=$(abspath $(RFS)) >/dev/null
 	@mkdir -p $(RFS)/proc $(RFS)/sys $(RFS)/dev $(RFS)/etc
 	@touch $@
 
 # The tracked overlay is applied AFTER the BusyBox install, so rootfs/ always
 # wins. This is the whole point of tracking it.
-$(RFS)/.overlay: $(RFS)/.busybox-installed $(shell find $(TOP)/rootfs -type f)
+$(STAMPS)/overlay: $(STAMPS)/busybox-installed $(shell find $(TOP)/rootfs -type f)
 	@echo "  [FS]    overlay rootfs/"
 	@cp -a $(TOP)/rootfs/. $(RFS)/
 	@chmod +x $(RFS)/init
 	@touch $@
 
-$(RFS)/programs/%: $(TOP)/programs/%.c $(RFS)/.overlay
+$(RFS)/programs/%: $(TOP)/programs/%.c $(STAMPS)/overlay
 	@mkdir -p $(RFS)/programs
 	@echo "  [CC]    $* (static)"
 	@$(CC) -static -O2 -Wall -o $@ $< -lm
@@ -65,7 +65,7 @@ $(RFS)/programs/%: $(TOP)/programs/%.c $(RFS)/.overlay
 # silently emits .ko files with every external symbol unresolved -- they build
 # fine and then fail to insmod. Phase two relinks the kernel around the real
 # initramfs and is incremental.
-$(RFS)/.modules: $(RFS)/.overlay $(KBUILD)/.scaffold
+$(STAMPS)/modules: $(STAMPS)/overlay $(KBUILD)/.scaffold
 ifneq ($(RECIPE_MODULES),)
 	@mkdir -p $(RFS)/modules $(BUILD)/$(RECIPE)/modsrc
 	@cp $(addprefix $(TOP)/programs/modules/,$(RECIPE_MODULES)) $(BUILD)/$(RECIPE)/modsrc/
@@ -85,15 +85,15 @@ ifneq ($(RECIPE_MODULES),)
 endif
 	@touch $@
 
-$(RFS)/.payload: $(RFS)/.overlay $(TOP)/programs/scripts/$(RECIPE_INIT)
+$(STAMPS)/payload: $(STAMPS)/overlay $(TOP)/programs/scripts/$(RECIPE_INIT)
 	@echo "  [FS]    payload $(RECIPE_INIT) -> /recipe-init"
 	@cp $(TOP)/programs/scripts/$(RECIPE_INIT) $(RFS)/recipe-init
 	@chmod +x $(RFS)/recipe-init
 	@touch $@
 
-INITRAMFS_DEPS := $(RFS)/.overlay $(RFS)/.payload $(RECIPE_PROG_BINS)
+INITRAMFS_DEPS := $(STAMPS)/overlay $(STAMPS)/payload $(RECIPE_PROG_BINS)
 ifneq ($(RECIPE_MODULES),)
-INITRAMFS_DEPS += $(RFS)/.modules
+INITRAMFS_DEPS += $(STAMPS)/modules
 endif
 
 # Sorted names, uid/gid 0, a fixed mtime, and --reproducible so the same inputs
