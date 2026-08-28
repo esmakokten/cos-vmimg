@@ -3,19 +3,25 @@
 Two steps. The first needs the repo to exist on GitHub; the second is a local
 change to Composite.
 
-## 1. Add as a submodule
+## Status: done
+
+Both steps below are already applied on the **`vm_image`** branch of
+`esmakokten/composite`, along with the VMM change described further down:
 
 ```sh
-cd /path/to/composite
-git submodule add -b main <repo-url> \
-    src/components/implementation/simple_vmm/vmimg
+git clone -b vm_image https://github.com/esmakokten/composite.git
+cd composite
+git submodule update --init --recursive
 ```
 
-This matches Composite's existing convention — all five current submodules are
-branch-pinned in `.gitmodules`.
+This file is kept as a description of what that branch contains.
 
-## 2. Build the image as part of `./cos build`
+## 1. Submodule
 
+Added at `src/components/implementation/simple_vmm/vmimg`, branch-pinned to
+`main`, matching the convention of Composite's five existing submodules.
+
+## 2. Building the image as part of `./cos build`
 `vmm/Makefile` already has the per-component escape hatch:
 
 ```make
@@ -23,13 +29,13 @@ private:
 	cd guest && make && cd ..
 ```
 
-Replace it with `integration/vmm-Makefile.patch` (below), which also builds the
-guest Linux image and installs it into `guest/`. Select the variant with
-`VM_IMAGE`, defaulting to the `shell` smoke-test image:
+It now also builds the guest Linux image from the submodule and installs it into
+`guest/`. Select the recipe with `VM_IMAGE` and the kernel with `VM_KVER`:
 
 ```sh
-./cos build                    # shell image
-VM_IMAGE=ping ./cos build      # ping image
+./cos build                                    # shell recipe, 6.6.155
+VM_IMAGE=ping ./cos build                      # ping recipe
+VM_IMAGE=vmexit-bench VM_KVER=5.15.107 ./cos build
 ```
 
 ## The ordering bug this also fixes
@@ -50,12 +56,8 @@ The patch makes the images explicit prerequisites of the component objects
 instead of relying on `private` ordering, so the dependency is expressed rather
 than assumed.
 
-To see the bug before applying the patch:
-
-```sh
-rm -f src/components/implementation/simple_vmm/vmm/guest/vmlinux.img
-./cos build      # observe what simple_vmm.c ends up embedding
-```
+Fixed on the branch: `guest/vmlinux.img` and `guest/guest.img` are now explicit
+prerequisites of `simple_vmm.o` rather than being left to `private` ordering.
 
 
 ---
@@ -76,22 +78,11 @@ pressure showing up a second time — those are just serial ports 2, 3 and 4.
 Every kernel version probes something new, so this generates one hack per
 version. Behaving like hardware removes the class.
 
-**Status: written, not applied.** It is offered as a patch rather than a commit
-because every Composite checkout with the relevant code currently has
-work in progress, and because `vmmio.c` exists only on the VMX branch — it is
-absent from `main`. Apply it to whichever branch the VMX work lives on:
-
-```sh
-cd /path/to/composite
-git checkout -b vmm-io-behave-like-hardware
-patch -p1 < .../integration/vmm-io-hardware-behaviour.patch
-```
-
-The patch sketches two small helpers (`port_seen`, `mmio_addr_seen`) that keep a
-seen-set so each distinct unhandled address is reported once rather than
-per-access; implement them as a small bitmap or hash before applying. Build with
-`-DVMM_STRICT_IO` to restore the panic when you want unexpected accesses to be
-loud.
+**Status: applied** on the `vm_image` branch, branched from `measurements` —
+`vmmio.c` does not exist on `main`. The seen-set helpers are implemented: a
+bitmap over the 64K port space, and a small table of MMIO pages, so each
+distinct unhandled address is reported once rather than per access. Build with
+`-DVMM_STRICT_IO` to restore the panic when you want unexpected accesses loud.
 
 ### Why this still matters
 
