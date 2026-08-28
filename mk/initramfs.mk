@@ -1,3 +1,6 @@
+# pipefail below needs bash, not dash.
+SHELL := /bin/bash
+
 # Initramfs: static BusyBox + the tracked rootfs overlay + the recipe's payload.
 #
 # Every path under $(RFS) is generated. Nothing here is hand-maintained, so no
@@ -74,7 +77,10 @@ ifneq ($(RECIPE_MODULES),)
 		echo "obj-m += $$o" >> $(BUILD)/$(RECIPE)/modsrc/Kbuild; \
 	done
 	@echo "  [KMOD]  $(RECIPE_MODULES)"
-	@$(MAKE) -s -C $(LINUX_SRC) O=$(abspath $(KBUILD)) \
+	@# pipefail matters: piping into tee otherwise reports tee's exit status, so
+	@# a module that fails to compile is swallowed and the image ships without
+	@# it. This is the same failure-masking the old programs/Makefile had.
+	@set -o pipefail; $(MAKE) -s -C $(LINUX_SRC) O=$(abspath $(KBUILD)) \
 		M=$(abspath $(BUILD)/$(RECIPE)/modsrc) modules 2>&1 \
 		| tee $(BUILD)/$(RECIPE)/modsrc/modpost.log
 	@if grep -q 'undefined!' $(BUILD)/$(RECIPE)/modsrc/modpost.log; then \
