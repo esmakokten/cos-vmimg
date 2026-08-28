@@ -4,9 +4,25 @@
 # recipe; per-recipe configuration lives entirely in the O= build directory.
 
 LINUX_TARBALL := linux-$(KVER).tar.xz
-LINUX_URL     := https://cdn.kernel.org/pub/linux/kernel/v5.x/$(LINUX_TARBALL)
-LINUX_SHA256  := 19370e769045681f52cceedb14ecda97e89b1b058133a0c8ad45d35ffbc5afa8
 LINUX_SRC     := $(BUILD)/linux-$(KVER)
+
+# The tarball lives under v<major>.x, so the URL follows KVER rather than being
+# pinned to one series.
+KVER_MAJOR := $(firstword $(subst ., ,$(KVER)))
+LINUX_URL  := https://cdn.kernel.org/pub/linux/kernel/v$(KVER_MAJOR).x/$(LINUX_TARBALL)
+
+# Known-good checksums, from cdn.kernel.org/pub/linux/kernel/v<major>.x/sha256sums.asc.
+# Adding a kernel version means adding a line here: the build refuses to fetch a
+# version it has no recorded checksum for rather than trusting whatever the
+# network returns.
+LINUX_SHA256_5.15.107 := 19370e769045681f52cceedb14ecda97e89b1b058133a0c8ad45d35ffbc5afa8
+LINUX_SHA256_6.1.186  := eeedc32bbf2448205aff50ee2760a4d87172cf8f8279c1e5930069ad36f6236e
+LINUX_SHA256_6.6.155  := 4e67a9263f2c19b070112109c9a282ee8e8ea49f1641e41faa5cca2c41654982
+
+LINUX_SHA256 := $(LINUX_SHA256_$(KVER))
+ifeq ($(LINUX_SHA256),)
+$(error No sha256 recorded for kernel $(KVER). Add LINUX_SHA256_$(KVER) to mk/kernel.mk, taking the value from https://cdn.kernel.org/pub/linux/kernel/v$(KVER_MAJOR).x/sha256sums.asc)
+endif
 
 PATCHES := $(sort $(wildcard $(TOP)/patches/*.patch))
 

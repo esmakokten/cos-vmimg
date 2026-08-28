@@ -56,7 +56,9 @@ RFS       := $(BUILD)/$(RECIPE)/rootfs
 # stamps and make every target permanently out of date; and nothing that is not
 # part of the guest filesystem belongs in the guest filesystem.
 STAMPS    := $(BUILD)/$(RECIPE)/stamps
-KBUILD    := $(BUILD)/$(RECIPE)/kernel
+# Version-specific: switching KVER must not reuse a build directory that was
+# configured and built for a different kernel.
+KBUILD    := $(BUILD)/$(RECIPE)/kernel-$(KVER)
 INITRAMFS := $(BUILD)/$(RECIPE)/initramfs.cpio.gz
 IMG       := $(OUT)/vmlinux-$(RECIPE).img
 ISO       := $(OUT)/kernel-$(RECIPE).iso
@@ -86,7 +88,7 @@ $(MANIFEST): $(IMG)
 	@{ \
 	  echo "recipe:      $(RECIPE)"; \
 	  echo "description: $(RECIPE_DESC)"; \
-	  echo "kernel:      $(KVER) + $(words $(PATCHES)) patches"; \
+	  echo "kernel:      $(KVER)$(if $(PATCHES), + $(words $(PATCHES)) patches, (unpatched))"; \
 	  echo "busybox:     $(BB_VER)"; \
 	  echo "programs:    $(if $(RECIPE_PROGRAMS),$(RECIPE_PROGRAMS),none)"; \
 	  echo "modules:     $(if $(RECIPE_MODULES),$(RECIPE_MODULES),none)"; \
