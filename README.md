@@ -310,6 +310,12 @@ produced an ISO that booted 5.15.107 when asked for 6.6.
 
 **Verified:** 5.15.107 and 6.6.155 both build and boot from unmodified sources.
 
+**Out-of-tree modules are the part that actually drifts.** The kernel patches are
+gone, but `programs/modules/*.c` link against internal kernel APIs, and those do
+change: `class_create()` lost its `owner` argument in 6.4, which broke both
+benchmark modules on 6.6 until they were guarded on `LINUX_VERSION_CODE`. Expect
+this, not patch rebasing, to be the recurring cost of a version bump.
+
 What could still need work on a much newer kernel: the guest memory layout in
 `kmain.c` (`GUEST_LOAD_BASE`, `GUEST_RAM_SIZE`) is our choice rather than the
 kernel's, and the build will refuse to boot a kernel whose `init_size` does not
