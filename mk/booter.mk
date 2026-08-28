@@ -7,10 +7,18 @@
 BOOTER_CC := $(CC) -m64
 BOOTER_LD := ld -m elf_x86_64 --nmagic
 
+# kmain.c includes <asm/bootparam.h> for struct boot_params/setup_header, and
+# that header chain differs between kernel versions -- 6.6 reaches
+# asm/rwonce.h, which 5.15 did not -- so the non-uapi arch and generated
+# directories have to be on the path too, not just the uapi ones.
 BOOTER_INC := -I$(TOP)/vmxbooter \
               -I$(LINUX_SRC)/include \
-              -I$(LINUX_SRC)/arch/x86/include/uapi \
               -I$(LINUX_SRC)/include/uapi \
+              -I$(LINUX_SRC)/arch/x86/include \
+              -I$(LINUX_SRC)/arch/x86/include/uapi \
+              -I$(KBUILD)/include \
+              -I$(KBUILD)/include/generated/uapi \
+              -I$(KBUILD)/arch/x86/include/generated \
               -I$(KBUILD)/arch/x86/include/generated/uapi
 
 BOOTER_WARN := -Wall -Wcast-align -Wformat=2 -Winit-self -Wmissing-declarations \
