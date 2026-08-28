@@ -9,6 +9,18 @@
 #include <asm/msr.h>
 #include <asm/processor.h>
 
+#include <linux/version.h>
+
+/*
+ * class_create() lost its owner argument in 6.4 (commit 1aaba11da9aa,
+ * "driver core: class: remove module * from class_create()").
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+#define COS_CLASS_CREATE(name) class_create(name)
+#else
+#define COS_CLASS_CREATE(name) class_create(THIS_MODULE, name)
+#endif
+
 static dev_t devno;
 static struct cdev cdev;
 static struct class *cls;
@@ -56,7 +68,7 @@ static int __init fake_init(void){
     ret = cdev_add(&cdev, devno, 1);
     if (ret) goto err_unregister;
 
-    cls = class_create(THIS_MODULE, "kvm-fake");
+    cls = COS_CLASS_CREATE("kvm-fake");
     if (IS_ERR(cls)) { ret = PTR_ERR(cls); goto err_cdev; }
 
     if (!device_create(cls, NULL, devno, NULL, "kvm-fake")) {
