@@ -1,4 +1,4 @@
-#include <asm/bootparam.h>
+#include "boot_protocol.h"
 
 #define NUM_CPU 1
 
@@ -63,7 +63,6 @@ struct acpi_madt {
 } __attribute__((packed));
 
 struct boot_params boot_params;
-struct setup_data init_setup_data;
 
 const char *cmd_line_str = "console=uart8250,io,0x3f8,115200n8 spectre_v2=off random.trust_cpu=on acpi_force_table_verification=true acpi.debug_level=ACPI_DEBUG";
 // rng_core.default_quality=1000
@@ -105,7 +104,7 @@ void *memset(void *dst, int b,  unsigned long len)
 static __attribute__((unused))
 int memcmp(const void *s1, const void *s2, unsigned long n)
 {
-	size_t ofs = 0;
+	unsigned long ofs = 0;
 	int c1 = 0;
 
 	while (ofs < n && !(c1 = ((unsigned char *)s1)[ofs] - ((unsigned char *)s2)[ofs])) {
@@ -115,7 +114,7 @@ int memcmp(const void *s1, const void *s2, unsigned long n)
 }
 
 static inline void *
-memcpy(void *dst, const void *src, size_t count)
+memcpy(void *dst, const void *src, unsigned long count)
 {
 	const __u8 *s = (const __u8 *)src;
 	__u8 *      d = (__u8 *)dst;
@@ -217,9 +216,6 @@ void acpi_init(struct acpi_table_rsdp *rsdp)
 #define GUEST_LOAD_BASE  (0x900000UL)
 #define GUEST_RAM_START  (0x100000UL)
 #define GUEST_RAM_SIZE   (60UL * 1024 * 1024)
-
-/* Offset of struct setup_header within a bzImage; see Documentation/x86/boot.rst. */
-#define SETUP_HEADER_OFF (0x1f1)
 
 /*
  * The 64-bit entry point is at +0x200 from the start of the protected-mode
