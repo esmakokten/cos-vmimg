@@ -1,0 +1,5 @@
+description = "Network ping test"
+init        = "run_ping.sh"
+programs    = ["ping.c"]
+modules     = []
+fragment    = "net.config"

@@ -1,0 +1,13 @@
+# Everything generated lives in these two directories.
+/build/
+/out/
+
+*.o
+*.ko
+*.img
+*.iso
+*.bin
+*.cpio.gz
+*~
+*.swp
+.vscode/

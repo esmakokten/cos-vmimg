@@ -1,0 +1,6 @@
+# Smallest useful image: BusyBox and a shell prompt. This is the smoke test --
+# if this does not boot, nothing else will.
+description = "BusyBox shell only"
+init        = "shell.sh"
+programs    = []
+modules     = []

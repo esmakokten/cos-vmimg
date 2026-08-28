@@ -1,0 +1,33 @@
+#!/bin/sh
+# PID 1 for the Composite guest image.
+#
+# This file is TRACKED. It used to live only in a gitignored build directory
+# where every run of the initramfs script overwrote it -- see README, "Why the
+# rootfs is tracked". Edit it here; the build overlays it onto the BusyBox
+# install, so tracked source always wins.
+#
+# Responsibilities: mount the pseudo-filesystems, prove we have a console, then
+# hand off to the recipe's payload at /recipe-init.
+
+set -u
+
+mount -t proc     proc     /proc
+mount -t sysfs    sysfs    /sys
+mount -t devtmpfs devtmpfs /dev
+
+# CONFIG_DEVTMPFS_MOUNT does not apply to initramfs boots (see
+# drivers/base/Kconfig), so the mount above is the only thing that populates
+# /dev. If it silently failed we would spend the rest of the boot guessing.
+if [ ! -c /dev/console ]; then
+	echo "FATAL: /dev/console missing after mounting devtmpfs."
+	echo "       Check CONFIG_DEVTMPFS=y in the kernel config."
+	exit 1
+fi
+
+if [ ! -x /recipe-init ]; then
+	echo "FATAL: /recipe-init missing or not executable."
+	echo "       The image was built without a recipe payload."
+	exit 1
+fi
+
+exec /recipe-init

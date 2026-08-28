@@ -1,0 +1,132 @@
+# cos-vmimg -- build Linux guest images for Composite's simple_vmm.
+#
+#   make image RECIPE=shell     build out/vmlinux-shell.img (+ .manifest)
+#   make run   RECIPE=shell     boot that image under QEMU
+#   make list                   show available recipes
+#   make install DESTDIR=<dir>  install the image where simple_vmm expects it
+#
+# See README.md for the pipeline and for how this differs from a normal distro.
+
+RECIPE ?= shell
+KVER   ?= 5.15.107
+JOBS   ?= $(shell nproc)
+CC     ?= gcc
+
+TOP   := $(CURDIR)
+BUILD := $(TOP)/build
+DL    := $(BUILD)/dl
+OUT   := $(TOP)/out
+
+RECIPE_FILE := $(TOP)/recipes/$(RECIPE).toml
+ifeq ($(wildcard $(RECIPE_FILE)),)
+$(error No such recipe '$(RECIPE)'. Available: $(patsubst $(TOP)/recipes/%.toml,%,$(wildcard $(TOP)/recipes/*.toml)))
+endif
+
+# Translate the recipe into make variables. Regenerated whenever the recipe
+# changes; a malformed recipe fails here rather than producing an empty image.
+RECIPE_MK := $(BUILD)/$(RECIPE)/recipe.mk
+$(shell mkdir -p $(BUILD)/$(RECIPE))
+$(shell $(TOP)/tools/recipe2mk.py $(RECIPE_FILE) > $(RECIPE_MK).tmp 2>$(RECIPE_MK).err \
+        && mv $(RECIPE_MK).tmp $(RECIPE_MK) || true)
+ifeq ($(wildcard $(RECIPE_MK)),)
+$(error $(shell cat $(RECIPE_MK).err))
+endif
+include $(RECIPE_MK)
+
+RFS       := $(BUILD)/$(RECIPE)/rootfs
+KBUILD    := $(BUILD)/$(RECIPE)/kernel
+INITRAMFS := $(BUILD)/$(RECIPE)/initramfs.cpio.gz
+IMG       := $(OUT)/vmlinux-$(RECIPE).img
+ISO       := $(OUT)/kernel-$(RECIPE).iso
+MANIFEST  := $(OUT)/vmlinux-$(RECIPE).manifest
+
+include mk/fetch.mk
+include mk/kernel.mk
+include mk/initramfs.mk
+include mk/booter.mk
+
+.PHONY: image all list run run-kvm debug iso install clean distclean gdb help
+.DEFAULT_GOAL := image
+
+$(BUILD) $(OUT):
+	@mkdir -p $@
+
+image: $(IMG) $(MANIFEST)
+	@echo
+	@echo "Image:    $(IMG)"
+	@echo "Manifest: $(MANIFEST)"
+
+all: image
+
+# The manifest is what turns a directory of anonymous vmlinux*.img blobs into
+# artifacts you can identify six months later.
+$(MANIFEST): $(IMG)
+	@{ \
+	  echo "recipe:      $(RECIPE)"; \
+	  echo "description: $(RECIPE_DESC)"; \
+	  echo "kernel:      $(KVER) + $(words $(PATCHES)) patches"; \
+	  echo "busybox:     $(BB_VER)"; \
+	  echo "programs:    $(if $(RECIPE_PROGRAMS),$(RECIPE_PROGRAMS),none)"; \
+	  echo "modules:     $(if $(RECIPE_MODULES),$(RECIPE_MODULES),none)"; \
+	  echo "init:        $(RECIPE_INIT)"; \
+	  echo "fragment:    $(if $(RECIPE_FRAGMENT),$(RECIPE_FRAGMENT),none)"; \
+	  echo "config:      sha256:$$(sha256sum $(KBUILD)/.config | cut -c1-16)"; \
+	  echo "initramfs:   sha256:$$(sha256sum $(INITRAMFS) | cut -c1-16)"; \
+	  echo "image:       sha256:$$(sha256sum $(IMG) | cut -c1-16)"; \
+	  echo "image-bytes: $$(stat -c%s $(IMG))"; \
+	  echo "overlay:     $$(git -C $(TOP) describe --always --dirty 2>/dev/null || echo unknown)"; \
+	  echo "built:       $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	} > $@
+
+list:
+	@echo "Available recipes:"
+	@for r in $(wildcard $(TOP)/recipes/*.toml); do \
+		printf "  %-16s %s\n" "$$(basename $$r .toml)" \
+		  "$$(sed -n 's/^description *= *"\(.*\)"/\1/p' $$r)"; \
+	done
+
+# --- QEMU ---------------------------------------------------------------------
+QEMU_ARGS := -chardev null,id=debug \
+             -device isa-debugcon,iobase=0xe9,chardev=debug \
+             -device edu
+MEM   ?= 1024
+VCPUS ?= 1
+
+run: $(ISO)
+	qemu-system-x86_64 $(QEMU_ARGS) -enable-kvm -cpu max -smp $(VCPUS) \
+		-m $(MEM) -cdrom $(ISO) -no-reboot -s -nographic
+
+run-kvm: run
+
+debug: $(ISO)
+	@echo "Waiting for gdb on :1234 -- run 'make gdb' in another terminal."
+	qemu-system-x86_64 $(QEMU_ARGS) -enable-kvm -cpu max -smp $(VCPUS) \
+		-m $(MEM) -cdrom $(ISO) -no-reboot -s -S -nographic
+
+gdb:
+	gdb -ex "file $(KBUILD)/vmlinux" -ex "target remote :1234"
+
+iso: $(ISO)
+
+# --- installation into Composite ----------------------------------------------
+# DESTDIR is simple_vmm/vmm/guest/, where simple_vmm.c INCBINs the image.
+DESTDIR ?=
+install: $(IMG) $(MANIFEST)
+	@test -n "$(DESTDIR)" || { echo "usage: make install DESTDIR=<.../simple_vmm/vmm/guest>"; exit 1; }
+	@test -d "$(DESTDIR)" || { echo "ERROR: $(DESTDIR) is not a directory"; exit 1; }
+	@install -m 0644 $(IMG) $(DESTDIR)/vmlinux.img
+	@install -m 0644 $(MANIFEST) $(DESTDIR)/vmlinux.manifest
+	@echo "Installed $(RECIPE) image -> $(DESTDIR)/vmlinux.img"
+
+clean:
+	rm -rf $(BUILD)/$(RECIPE) $(IMG) $(ISO) $(MANIFEST)
+
+# Keeps the download cache; refetching a 127MB tarball to test a Makefile edit
+# is not a good time.
+distclean:
+	rm -rf $(BUILD)/linux-$(KVER) $(BUILD)/busybox-$(BB_VER) \
+	       $(foreach r,$(patsubst $(TOP)/recipes/%.toml,%,$(wildcard $(TOP)/recipes/*.toml)),$(BUILD)/$(r)) \
+	       $(OUT)
+
+help:
+	@sed -n '2,9p' $(firstword $(MAKEFILE_LIST)) | sed 's/^# \?//'

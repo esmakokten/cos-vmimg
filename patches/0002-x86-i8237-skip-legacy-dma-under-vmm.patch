@@ -1,0 +1,23 @@
+Subject: [PATCH 2/3] x86/i8237: skip legacy DMA init under the Composite VMM
+
+The Composite simple_vmm does not emulate the legacy 8237 DMA controller. On a
+normal machine i8237A_init_ops() pokes the DMA controller's I/O ports; under the
+VMM those accesses have no backing device.
+
+Return early so the init op becomes a no-op inside the guest.
+
+This is a device-emulation gap workaround, not a kernel bug fix: it should be
+revisited if the VMM ever grows legacy DMA emulation.
+
+---
+--- a/arch/x86/kernel/i8237.c
++++ b/arch/x86/kernel/i8237.c
+@@ -47,6 +47,8 @@
+ 
+ static int __init i8237A_init_ops(void)
+ {
++	/* VMM doesn't support this in the VM, doesn't matter */
++	return 0;
+ 	/*
+ 	 * From SKL PCH onwards, the legacy DMA device is removed in which the
+ 	 * I/O ports (81h-83h, 87h, 89h-8Bh, 8Fh) related to it are removed

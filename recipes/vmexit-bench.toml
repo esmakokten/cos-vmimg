@@ -1,0 +1,5 @@
+# Reconstructed from the former cosvmx_init_benchmark.sh.
+description = "VM exit/resume microbenchmark"
+init        = "run_vmexit_bench.sh"
+programs    = ["vmexit-vmresume-microbench.c"]
+modules     = ["fake-module.c", "mesurement-module.c"]
