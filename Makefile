@@ -21,6 +21,10 @@ CC     ?= gcc
 # the banner string compiled into the binary -- which made the initramfs, and so
 # the whole image, differ between machines and between BusyBox rebuilds.
 export SOURCE_DATE_EPOCH ?= 1700000000
+# BusyBox renders its banner timestamp through localtime even when
+# SOURCE_DATE_EPOCH is set, so without this the image still varies by the
+# builder's timezone. Pin it for the whole build.
+export TZ := UTC
 export KBUILD_BUILD_TIMESTAMP := $(shell date -u -d @$(SOURCE_DATE_EPOCH) 2>/dev/null)
 export KBUILD_BUILD_USER      := cos-vmimg
 export KBUILD_BUILD_HOST      := cos-vmimg
