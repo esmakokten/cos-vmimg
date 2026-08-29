@@ -232,33 +232,37 @@ loudly if they do not.
 
 ## 7. Integrating with Composite
 
-Intended as a submodule at `src/components/implementation/simple_vmm/vmimg`,
-matching the five submodules Composite already uses.
+Used as a submodule at `src/components/implementation/simple_vmm/vmimg`, matching
+the convention of the five submodules Composite already uses. This is wired up on
+Composite's `vm_image` branch, where `./cos build` builds and installs the image:
+
+```sh
+./cos build                        # shell recipe
+VM_IMAGE=vmexit-bench ./cos build  # a different recipe
+```
+
+The submodule is pinned to a **tag**, not a branch — see below.
+
+To install an image by hand, or into a tree that does not have the submodule
+wiring:
 
 ```sh
 make image RECIPE=shell
 make install DESTDIR=/path/to/composite/src/components/implementation/simple_vmm/vmm/guest
 ```
 
-`install` also drops the `.manifest` next to the image, so the guest directory
-records what it is holding. That directory previously accumulated seven
-`vmlinux*.img` variants — `vmlinux_ping.img`, `vmlinux-only-vmexit.img`,
+`install` drops the `.manifest` next to the image, so the guest directory records
+what it is holding. That directory previously accumulated seven `vmlinux*.img`
+variants — `vmlinux_ping.img`, `vmlinux-only-vmexit.img`,
 `vmlinux-all-measurements2.img` and friends — none tracked and none identifiable
 after the fact.
 
-### A build-ordering caveat on the Composite side
-
-`Makefile.subsubdir` has:
-
-```make
-all: print $(SOURCE_DEPENDENCIES) $(COMPOBJ) private
-```
-
-`$(COMPOBJ)` compiles `simple_vmm.c` — including its `INCBIN` of
-`guest/vmlinux.img` — **before** the `private` target that populates `guest/`.
-This works today only because a previous build left an image behind; a genuinely
-fresh tree embeds whatever is there, or fails. The image should be an explicit
-prerequisite of the simple_vmm object rather than relying on `private` ordering.
+**A build-ordering bug this exposed**, fixed on the `vm_image` branch:
+`Makefile.subsubdir` lists `all: ... $(COMPOBJ) private`, and make builds
+prerequisites left to right, so `simple_vmm.c` — with its `INCBIN` of
+`guest/vmlinux.img` — was compiled *before* the `private` target populated
+`guest/`. It worked only because a previous build left an image behind. The
+images are now explicit prerequisites of `simple_vmm.o`.
 
 ## 8. Using a different kernel version
 
