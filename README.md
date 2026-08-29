@@ -140,53 +140,15 @@ date if you want the guest's `uname -v` to carry one.
 `rootfs/init` is the generic PID 1 for every recipe: it mounts `/proc`, `/sys`
 and `/dev`, verifies `/dev/console` exists, and `exec`s `/recipe-init`.
 
-## 5. Why the rootfs is tracked
+## 5. The rootfs is tracked source
 
-Worth stating plainly, because the previous arrangement cost real debugging time.
+`rootfs/` is tracked, and the build **overlays it on top of** the BusyBox install,
+so tracked source always wins. Everything under `build/` is generated and
+disposable; no rule needs to `rm -rf` a directory that might hold your edits,
+because no such directory exists.
 
-The working `/init` used to live at
-`helpers/compiling_linux/busybox_initrd/initrd/init` — inside a directory
-`helpers/.gitignore` ignored. `busybox_initrd.sh` began with
-`rm -rf "$WORK/initrd"` and then wrote a two-line stub `init`. So the file that
-made images boot was untracked, and every run of the build regenerated it as
-something that did not work.
-
-Here, `rootfs/` is tracked and the build **overlays it on top of** the BusyBox
-install. Tracked source always wins, and everything under `build/` is
-disposable. No rule needs to `rm -rf` a directory that might hold someone's
-edits, because no such directory exists.
-
-Related fixes carried over from the old build:
-
-- **BusyBox fetch.** The old script's comment claimed `busybox.net/downloads` was
-  down. It is not. The bug was the version spelling: the release tarball is
-  `busybox-1.37.0.tar.bz2`, the git snapshot is `busybox-1_37_0.tar.bz2`, and one
-  string was used for both URLs. Both are now tried, with the right spelling
-  each, and the download is checksum-verified.
-- **Masked failures.** `programs/Makefile` ran the BusyBox script and then
-  `cd -`, which swallowed the exit status: a failed build reported success and
-  the cpio was packed from a stale tree. Every `|| true` and `|| :` on the build
-  path is gone.
-- **Silently broken kernel modules.** The old build ran `make ... modules` with
-  only `bzImage` built, so `Module.symvers` was empty and `modpost` produced
-  `.ko` files with every external symbol unresolved. They compiled fine and would
-  have failed at `insmod`. The `.ko`s were then copied with
-  `2>/dev/null || true`, so nothing reported it. The build now runs a scaffold
-  phase to populate `Module.symvers` and **fails** if `modpost` says
-  `undefined!`.
-- **Linker script paths.** `linker.ld` selects the entry stub with
-  `loader.o(.text)`, a filename *pattern* that only matches when `ld` is invoked
-  with bare object names. The old build worked only by virtue of running in that
-  directory; this one stages the script beside the objects and links from there.
-- **Build ordering.** The initramfs has to exist before the kernel embeds it, and
-  `vmlinux.bin` before `loader.o` links it. Neither was expressed as a
-  dependency, so `-j` could race. Both are real prerequisites now.
-- **`.config` churn.** A tracked 2982-line `.config` rewrote its
-  `CC`/`AS`/`LD`/`PAHOLE` version keys on every machine, so it was permanently
-  dirty in `git status`. It is now a 209-line `configs/vmxbooter_defconfig`.
-- **Programs named `.o`.** `gcc -static -o foo.o` produced executables with an
-  object-file extension, which collided with `.gitignore` and with the real
-  objects from the module build. They are now extensionless.
+Edit `rootfs/init` in place. Do not edit the copy under `build/` — it is
+overwritten on every build.
 
 ## 6. devtmpfs and `/dev`
 
@@ -210,25 +172,23 @@ every boot log and it is expected:
 Warning: unable to open an initial console.
 ```
 
-PID 1 therefore starts with no stdin, stdout or stderr. An interactive shell
-would inherit a closed stdin, read EOF immediately, exit, and the kernel would
-panic with `Attempted to kill init`. So `/init` reopens the console explicitly
-once devtmpfs has created the node:
+PID 1 therefore starts with no stdin, stdout or stderr, and a shell inheriting a
+closed stdin would read EOF, exit, and panic the kernel with
+`Attempted to kill init`. `/init` reopens the console once devtmpfs has created
+the node:
 
 ```sh
 exec 0</dev/console 1>/dev/console 2>/dev/console
 ```
 
-This is worth knowing before adding a payload that expects a terminal.
+Worth knowing before adding a payload that expects a terminal.
 
 ### devtmpfs also creates module device nodes
 
-The old `cosvmx_init_benchmark.sh` carried about forty lines that `mknod`'d
-`/dev/kvm-microbench` and `/dev/kvm-fake` by scraping major numbers out of
-`/proc/devices`, with hardcoded fallbacks to 253 and 254. With
-`CONFIG_DEVTMPFS=y` none of that is needed — the nodes appear when the modules
-register their devices. `run_vmexit_bench.sh` just checks they exist and fails
-loudly if they do not.
+With `CONFIG_DEVTMPFS=y` a module's device node appears when the module
+registers it — `/dev/kvm-microbench` and `/dev/kvm-fake` need no `mknod` and no
+major-number scraping. `run_vmexit_bench.sh` checks they exist and fails loudly
+if they do not.
 
 ## 7. Integrating with Composite
 
@@ -261,10 +221,6 @@ constants = [{variable = "VM_GUEST_IMAGE",
 ```
 
 Changing guest is then a `./cos compose`, not a rebuild.
-
-Earlier this installed everything as `vmlinux.img`, which threw away the only
-thing distinguishing two images — the same problem `guest/` already had when it
-held seven unlabelled `vmlinux*.img` variants.
 
 **A build-ordering bug this exposed**, fixed on the `vm_image` branch:
 `Makefile.subsubdir` lists `all: ... $(COMPOBJ) private`, and make builds
