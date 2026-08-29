@@ -136,14 +136,17 @@ gdb:
 iso: $(ISO)
 
 # --- installation into Composite ----------------------------------------------
-# DESTDIR is simple_vmm/vmm/guest/, where simple_vmm.c INCBINs the image.
+# DESTDIR is simple_vmm/vmm/guest/. The installed file keeps its full name --
+# vmlinux-<recipe>-<kver>.img -- so several images can coexist there and a
+# composition script can name the one it wants. Flattening them all to
+# vmlinux.img threw away the only thing distinguishing them.
 DESTDIR ?=
 install: $(IMG) $(MANIFEST)
 	@test -n "$(DESTDIR)" || { echo "usage: make install DESTDIR=<.../simple_vmm/vmm/guest>"; exit 1; }
 	@test -d "$(DESTDIR)" || { echo "ERROR: $(DESTDIR) is not a directory"; exit 1; }
-	@install -m 0644 $(IMG) $(DESTDIR)/vmlinux.img
-	@install -m 0644 $(MANIFEST) $(DESTDIR)/vmlinux.manifest
-	@echo "Installed $(RECIPE) image -> $(DESTDIR)/vmlinux.img"
+	@install -m 0644 $(IMG) $(DESTDIR)/$(notdir $(IMG))
+	@install -m 0644 $(MANIFEST) $(DESTDIR)/$(notdir $(MANIFEST))
+	@echo "Installed -> $(DESTDIR)/$(notdir $(IMG))"
 
 clean:
 	rm -rf $(BUILD)/$(RECIPE) $(IMG) $(ISO) $(MANIFEST)

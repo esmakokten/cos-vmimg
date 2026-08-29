@@ -272,11 +272,20 @@ make image RECIPE=shell
 make install DESTDIR=/path/to/composite/src/components/implementation/simple_vmm/vmm/guest
 ```
 
-`install` also drops the `.manifest` next to the image, so the guest directory
-records what it is holding. That directory previously accumulated seven
-`vmlinux*.img` variants — `vmlinux_ping.img`, `vmlinux-only-vmexit.img`,
-`vmlinux-all-measurements2.img` and friends — none tracked and none identifiable
-after the fact.
+`install` keeps the image's full name — `vmlinux-<recipe>-<kver>.img` — and drops
+the `.manifest` beside it. Several images can therefore coexist in `guest/`, and
+the composition script names the one to embed:
+
+```toml
+constants = [{variable = "VM_GUEST_IMAGE",
+              value = "\"guest/vmlinux-shell-6.6.155.img\""}]
+```
+
+Changing guest is then a `./cos compose`, not a rebuild.
+
+Earlier this installed everything as `vmlinux.img`, which threw away the only
+thing distinguishing two images — the same problem `guest/` already had when it
+held seven unlabelled `vmlinux*.img` variants.
 
 ### A build-ordering caveat on the Composite side
 
