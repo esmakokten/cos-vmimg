@@ -1,0 +1,11 @@
+Warning: unable to open an initial console.
+EXITBENCH config rungs=L7 n=1000000 site=kernel chunk=1024 cold=0 gpa=0x40000000 probe=
+  insmod /modules/exit_bench.ko
+--- exit ladder: site=kernel ---
+note: L7 used gpa 0x40000000
+EXITBENCH rung=L7 name=mmio_unbacked site=kernel mode=hot n=1000000 min=13244 p50=13832 p90=14532 p99=28134 p999=35864 max=223108 mean=14737.2 stddev=3368.1
+note: L7 used gpa 0x40000000
+EXITBENCH rung=L7 name=mmio_unbacked site=kernel mode=hot n=1000000 min=13302 p50=13852 p90=25378 p99=28566 p999=38264 max=139736 mean=15765.9 stddev=4590.2
+note: L7 used gpa 0x40000000
+EXITBENCH rung=L7 name=mmio_unbacked site=kernel mode=hot n=1000000 min=13292 p50=13672 p90=14400 p99=28174 p999=35098 max=139436 mean=14634.4 stddev=3289.9
+qemu-system-x86_64: terminating on signal 15 from pid 2307 (timeout)

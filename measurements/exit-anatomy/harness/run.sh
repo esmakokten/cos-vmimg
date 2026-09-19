@@ -32,6 +32,7 @@ EXTRA=""
 VERBOSE_GUEST=0
 REPEAT=1
 TRACE_SECS=10
+GUEST_APPEND=""
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -51,6 +52,10 @@ while [[ $# -gt 0 ]]; do
 	--hold)       HOLD=1; shift ;;
 	--guest-verbose) VERBOSE_GUEST=1; shift ;;
 	--repeat)     REPEAT="$2"; shift 2 ;;
+	# Extra guest kernel arguments, e.g. "mitigations=off". The guest's own
+	# mitigation choices are not free for the host: a guest SPEC_CTRL value that
+	# differs from the host's forces KVM to swap the MSR on every exit.
+	--guest-append) GUEST_APPEND="$2"; shift 2 ;;
 	--trace-secs) TRACE_SECS="$2"; shift 2 ;;
 	--timeout)    TIMEOUT="$2"; shift 2 ;;
 	--extra)      EXTRA="$2"; shift 2 ;;
@@ -129,6 +134,7 @@ APPEND="console=ttyS0${GUEST_EXTRA_CMDLINE:-}"
 APPEND+=" eb.rungs=$RUNGS eb.n=$NSAMP eb.site=$SITE eb.chunk=$CHUNK"
 APPEND+=" eb.cold=$COLD eb.mmio_gpa=$GPA eb.reps=$REPS eb.hold=$HOLD eb.repeat=$REPEAT"
 [[ -n "$PROBE" ]] && APPEND+=" eb.probe=$PROBE"
+[[ -n "$GUEST_APPEND" ]] && APPEND+=" $GUEST_APPEND"
 
 # debug-threads=on is what makes QEMU name its vCPU threads "CPU <n>/KVM".
 # Without it every thread is called "qemu-system-x86" and profile.sh/pmu.sh

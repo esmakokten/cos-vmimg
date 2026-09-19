@@ -1,0 +1,23 @@
+Warning: unable to open an initial console.
+EXITBENCH config rungs=L2 n=1000000 site=kernel chunk=1024 cold=0 gpa=0x40000000 probe=
+  insmod /modules/exit_bench.ko
+--- exit ladder: site=kernel ---
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2436 p50=2482 p90=2494 p99=2500 p999=2660 max=255908 mean=2480.8 stddev=272.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2430 p50=2478 p90=2488 p99=2494 p999=2708 max=170036 mean=2476.5 stddev=196.8
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2434 p50=2484 p90=2604 p99=2674 p999=13058 max=158366 mean=2586.6 stddev=887.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2554 p50=2604 p90=2608 p99=12638 p999=13554 max=185158 mean=2889.7 stddev=1683.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2554 p50=2604 p90=2612 p99=12638 p999=13584 max=160172 mean=2888.9 stddev=1683.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2556 p50=2604 p90=2608 p99=12630 p999=13522 max=155314 mean=2888.7 stddev=1680.9
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2552 p50=2602 p90=2612 p99=12614 p999=13544 max=132362 mean=2887.4 stddev=1674.8
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2544 p50=2602 p90=2608 p99=12632 p999=13546 max=137828 mean=2887.4 stddev=1682.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2554 p50=2604 p90=2610 p99=12626 p999=13492 max=144490 mean=2888.4 stddev=1672.3
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2554 p50=2604 p90=2616 p99=12694 p999=13542 max=145342 mean=2892.3 stddev=1686.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2554 p50=2604 p90=2610 p99=12630 p999=13558 max=133070 mean=2888.6 stddev=1678.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2556 p50=2606 p90=2612 p99=12646 p999=13670 max=133438 mean=2890.3 stddev=1694.4
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2424 p50=2568 p90=2610 p99=12260 p999=13344 max=138604 mean=2701.3 stddev=1261.7
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2428 p50=2482 p90=2486 p99=2496 p999=2746 max=135364 mean=2479.4 stddev=240.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2436 p50=2482 p90=2490 p99=2494 p999=2656 max=129892 mean=2478.3 stddev=152.4
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2434 p50=2480 p90=2488 p99=2496 p999=2652 max=122362 mean=2477.5 stddev=148.7
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2436 p50=2480 p90=2488 p99=2494 p999=2648 max=114550 mean=2476.6 stddev=140.7
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2432 p50=2484 p90=2492 p99=2498 p999=2648 max=115724 mean=2480.2 stddev=139.8
+qemu-system-x86_64: terminating on signal 15 from pid 4118 (timeout)

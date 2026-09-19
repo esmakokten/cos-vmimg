@@ -10,7 +10,7 @@ Rules for this file, because the table is only worth anything if they hold:
 4. **A row that measurement refutes stays**, struck through, with the run that
    refuted it. Deleting refuted rows is how a table stops being evidence.
 
-All figures: .154, Xeon Platinum 8160, Skylake-SP, SMT off, turbo off,
+The sections below the .153 answer are the first pass on .154, Xeon Platinum 8160, Skylake-SP, SMT off, turbo off,
 performance governor, guest kernel site, p50 cycles. **No CPU isolation yet** —
 p50s are reproducible to the cycle, tails are not.
 
@@ -36,6 +36,87 @@ Two questions:
 - **`28,624 − 3,864 ≈ 24,760`** — what does the hop into QEMU add?
 
 ---
+
+## The answer, on the machine Errand runs on (.153)
+
+Measured on **.153** — the R740 every Errand number comes from — booted from
+its disk Ubuntu 24.04 (kernel **6.8.0-94**, QEMU 8.2.2), same guest image as
+.154 byte for byte. Each row removes one thing and is a separate boot or guest
+configuration; isolation (`isolcpus=2 nohz_full=2 rcu_nocbs=2`) is held
+constant across the mitigation rows so it is not a variable. p50, n=200,000.
+Results `results/153-*-ladder.md`.
+
+### Peeling the KVM-only exit (VMCALL)
+
+| configuration | VMCALL p50 | step | what the step removed |
+| --- | ---: | ---: | --- |
+| stock boot, no isolation | 4,202 | | |
+| + CPU isolation (`w3-base`) | 4,560 | +358 | *adds* cost: likely `nohz_full` context tracking on every entry/exit **[hypothesis]** |
+| host `mitigations=off` | 3,536 | **−1,024** | host IBRS `SPEC_CTRL` write + RSB fill (−504, `nospectre` row), MDS `VERW` / L1TF (~−520, residual) |
+| + guest `mitigations=off` | 2,486 | **−1,050** | the `SPEC_CTRL` **swap forced by the guest's own mitigations** — `vmx_spec_ctrl_restore_host` 28.4% → 0.9% of the exit |
+| + `-cpu host,pmu=off` | 2,166 | **−320** | guest-PMU emulation: every emulated instruction is a PMU event to filter (`pmc_event_is_allowed`, 6.5%) |
+| hardware `VMEXIT`+`VMRESUME` | 676 | | Errand's null-VMCALL slot, this box |
+
+**4,560 = 676 hardware + ~1,490 structural KVM software + 1,024 host mitigations
++ 1,050 guest-induced `SPEC_CTRL` swap + 320 vPMU.** Everything but the last
+line of structural software is removable by configuration.
+
+This is the comparison the paper needs, and it cuts both ways:
+
+- **Against the KVM people actually run** (4,202, stock boot): Errand's 942 is
+  **4.5×** cheaper.
+- **Against KVM stripped of everything Errand does not do** — no mitigations on
+  either side, no vPMU (2,166): Errand is **2.3×** cheaper. That residual is
+  KVM's structure: the request sweep, per-exit XSAVE state, the `vmenter.S`
+  path, VMREAD-heavy exit classification.
+- **So ~60% of KVM's excess over Errand is mitigation and feature cost Errand
+  does not pay.** A reviewer will ask whether Errand is faster because it is
+  less protected. This table is the honest answer, and the paper has to say
+  which of those protections Errand's trust model makes unnecessary and which
+  it simply lacks. The guest-induced `SPEC_CTRL` swap is the sharpest case:
+  Errand's guests run mitigations too — does Errand swap `SPEC_CTRL`?
+
+### The QEMU round trip (MMIO → QEMU)
+
+| configuration | MMIO p50 | Δ vs `w3-base` | VMCALL Δ | reading |
+| --- | ---: | ---: | ---: | --- |
+| `w3-base` | 30,266 | | | |
+| `vmscape=off` | 16,598 | **−13,668 (−45%)** | −32 | the IBPB before every exit to userspace — **userspace path only**, as predicted |
+| `nopti` | 29,552 | −714 | −34 | PTI's CR3 writes: predicted 2×~230 + one ~210 entry surcharge ≈ 670; measured 714. **Consistent with** `CR3 Write Surcharge`, not proof of it |
+| `spectre_v2=off …` | 13,848 | −16,418 | −504 | IBRS + RSB; also disables IBPB, so the vmscape barrier appears not to run — the vulnerability file still says "Mitigation: IBPB", so that part is inferred from timing |
+| `mitigations=off` | 10,144 | **−20,122 (−66%)** | −1,024 | |
+| + guest mitigations off | 8,848 | | | |
+| + `pmu=off` | 8,468 | | | |
+
+**The hop into QEMU is intrinsically ~6,300 cycles** (8,468 − 2,166 with nothing
+mitigated); **mitigations quadruple it** to ~25,700. Two-thirds of a stock QEMU
+round trip on this box is mitigation, and nearly half is one barrier.
+
+### Profile shares are not costs
+
+The vmscape barrier's *share* of the L7 profile was 57% on .154, **13%** in
+`w3-base` on .153, and **40%** in `w3-nopti` on .153 — same box, same kernel,
+one reboot apart. Its measured *cost* is 45%. An IBPB flushes the indirect
+predictors; much of what it costs is paid by the code that runs *after* it and
+mispredicts, and where the sampler charges that depends on skid. **Every
+profile share in this file is a pointer to where to ablate, not a
+measurement.** The ablation Δs are the measurements.
+
+### Isolation trades median for tail
+
+| | VMCALL p50 / p999 | MMIO p50 / p99 |
+| --- | --- | --- |
+| stock boot | 4,202 / 12,112 | 28,802 / 38,362 |
+| isolated | 4,560 / **4,978** | 30,266 / **30,566** |
+
+Isolation raises the p50 and collapses the tail. The p50 cost is most likely
+`nohz_full` turning on context tracking, which adds work to every guest
+entry/exit and every syscall — a real-time configuration charging the exit path
+for its determinism. **[hypothesis — separate `isolcpus` from `nohz_full` to test]**
+
+---
+
+## .154 detail: where the cycles go (profiles)
 
 ## Answer 1: the KVM-internal exit (`prof-L2`, 285,650 samples over 15 s)
 
@@ -124,18 +205,14 @@ demonstrably is not, for this — but **the kernel↔user boundary under a moder
 mitigation set is the expensive thing, and a VMM that never crosses it never
 pays.**
 
-## Rows still owed a measurement
+## Still owed
 
-| # | Mechanism | Ablation | Status |
-| --- | --- | --- | --- |
-| 1 | vmscape IBPB before exit to userspace | `mitigations=off` boot variant | **the big one.** Profile says 57%; needs a reboot to confirm |
-| 2 | PTI `MOV to CR3` ×2 per syscall pair | `nopti` boot variant | predicted L7-only |
-| 3 | CR3 → `VMRESUME` entry surcharge (~210) charged by row 2 | `nopti` boot variant | predicted from `CR3 Write Surcharge` |
-| 4 | RSB stuffing + `IA32_SPEC_CTRL` write | `spectre_v2=off` boot variant | profile puts the SPEC_CTRL write alone at 12.8% of L2 |
-| 5 | the `vcpu->requests` sweep | none — structural | 4.43% of L2 `[profile]` |
-
-All four ablatable rows need one of the three boot variants in
-`host/boot-variants.md`, i.e. three reboots of .154.
+| item | how |
+| --- | --- |
+| split the ~520-cycle host-mitigation residual on VMCALL between MDS `VERW` and L1TF | boot variants `mds=off tsx_async_abort=off mmio_stale_data=off` vs `kvm-intel.vmentry_l1d_flush=never` |
+| separate `isolcpus` from `nohz_full` in the isolation cost | two more boot variants |
+| does Errand swap `SPEC_CTRL` on its exit path when the guest runs mitigations? | read Composite's VM exit path; if not, that is a gap, not a speedup |
+| the same sweep on .154's 6.14 kernel | the vmscape share there (57%) suggests the cost differs by kernel |
 
 ## Beyond latency: what the exit costs the guest afterwards
 
@@ -149,6 +226,13 @@ All four ablatable rows need one of the three boot variants in
 | MMIO → microvm | | | |
 
 ## Refuted
+
+~~**More than half the QEMU round trip is the vmscape IBPB**~~ (from the 57%
+profile share on .154). On .153 the barrier's measured cost is **45%**
+(`vmscape=off`, −13,668 of 30,266) and its share in the same-box profiles was
+13% and 40% in two boots. Nearly half, not more than half — and the share was
+never a cost. The .154 section below keeps the original wording with this
+correction applying to it.
 
 ~~**L1 (fast-path `WRMSR`) is KVM's software floor.**~~ It costs **4,056**,
 ~190 cycles *more* than a no-op `VMCALL`. `prof-L1` settles why: the fast path
@@ -182,3 +266,5 @@ earlier numbers as much as anyone else's.
 | --- | ---: | --- |
 | `cpuid;rdtsc` harness: a warming exit ~50 cycles before every measured exit | **+215 cycles on KVM-internal exits (~6%); +162 (0.7%) on the QEMU path** | EVIDENCE.md |
 | Tight-loop vs `--cold` | not yet measured | |
+| Re-rendering a saved profile after `kvm_intel` moves (module reload, or any reboot under KASLR) | attributed 46% of a VMCALL exit to `cleanup_module` | caught before publishing; `profile.sh` now snapshots `/proc/kallsyms` at record time and refuses to re-render without it. Validated: 8 profiles re-rendered identically after 1–4 reboots on .153 |
+| Reports truncated by SIGPIPE under `pipefail` | every profile report before the fix lost its provenance block | fixed; affected reports restored from same-boot renders and annotated |

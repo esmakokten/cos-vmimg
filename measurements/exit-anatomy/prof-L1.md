@@ -48,3 +48,76 @@ host-side exit path and nothing else.
                                   vcpu_run
                                   kvm_arch_vcpu_ioctl_run
                                   kvm_vcpu_ioctl
+
+Raw: `results/logs/prof-L1-20260919-001114.perf`
+
+> **Provenance appended 2026-09-19T17:02:03-04:00.** The run that produced this profile
+> lost its provenance block to a report-writer bug (SIGPIPE under pipefail;
+> fixed in profile.sh). The profile above was rendered in the recording boot
+> and is correct. The block below is from the same boot of this host (uptime
+> up 32 weeks, 4 days, 1 hour, 35 minutes); kvm_intel was reloaded by ablate.sh after this profile was taken
+> and restored to default parameters, which is what it had at profiling time.
+> Do not re-render this profile: kvm_intel has moved since, and no kallsyms
+> snapshot exists for it.
+
+## Provenance
+
+```
+date          2026-09-19T17:02:03-04:00
+host          composite-2025-1 (161.253.78.154)
+cpu           Intel(R) Xeon(R) Platinum 8160 CPU @ 2.10GHz
+tsc_mhz       2100 (assumed; see lib.sh)
+host kernel   6.14.0-37-generic
+host cmdline  BOOT_IMAGE=/boot/vmlinuz-6.14.0-37-generic root=UUID=56501e30-1393-4366-a894-4a5855ee93c8 ro quiet splash vt.handoff=7
+qemu          QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.16)
+governor      performance
+no_turbo      1
+smt           notsupported
+pin           cpu=2 node=0
+--- kvm_intel parameters ---
+allow_smaller_maxphyaddr     N
+dump_invalid_vmcs            N
+emulate_invalid_guest_state  Y
+enable_apicv                 Y
+enable_ipiv                  N
+enable_shadow_vmcs           Y
+enlightened_vmcs             N
+ept                          Y
+eptad                        Y
+error_on_inconsistent_vmcs_config Y
+fasteoi                      Y
+flexpriority                 Y
+nested                       Y
+nested_early_check           N
+ple_gap                      128
+ple_window                   4096
+ple_window_grow              2
+ple_window_max               4294967295
+ple_window_shrink            0
+pml                          Y
+preemption_timer             Y
+sgx                          N
+unrestricted_guest           Y
+vmentry_l1d_flush            cond
+vnmi                         Y
+vpid                         Y
+--- mitigations ---
+spectre_v2:Mitigation: IBRS; IBPB: conditional; STIBP: disabled; RSB filling; PBRSB-eIBRS: Not affected; BHI: Not affected
+indirect_target_selection:Not affected
+itlb_multihit:KVM: Mitigation: Split huge pages
+ghostwrite:Not affected
+vmscape:Mitigation: IBPB before exit to userspace
+mmio_stale_data:Mitigation: Clear CPU buffers; SMT disabled
+mds:Mitigation: Clear CPU buffers; SMT disabled
+reg_file_data_sampling:Not affected
+tsa:Not affected
+l1tf:Mitigation: PTE Inversion; VMX: conditional cache flushes, SMT disabled
+spec_store_bypass:Mitigation: Speculative Store Bypass disabled via prctl
+tsx_async_abort:Mitigation: Clear CPU buffers; SMT disabled
+spectre_v1:Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+gather_data_sampling:Vulnerable
+retbleed:Mitigation: IBRS
+spec_rstack_overflow:Not affected
+srbds:Not affected
+meltdown:Mitigation: PTI
+```

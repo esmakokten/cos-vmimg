@@ -27,3 +27,16 @@ the PMU collector, the ablation driver and the boot-variant procedure. It is
 kept here so the results are reproducible from this repo alone rather than from
 one machine. It expects the guest image this repo builds; `WORKSPACE.md` is the
 working-notes file from `~/w3_exit_anatomy` and describes the conventions.
+
+## .153 — the machine Errand runs on
+
+Files prefixed `153-` were taken on .153, the R740 every Errand number comes
+from, booted from its disk Ubuntu 24.04 (kernel 6.8.0-94) with the same guest
+image as .154. Each mitigation variant is a separate boot selected one-shot with
+`grub-reboot`; `harness/mkvariants.py` generates the GRUB entries and
+`harness/variants153.sh` drives the sweep from a laptop. The raw `perf.data`
+files and the `/proc/kallsyms` snapshot each one needs to be re-rendered stay on
+.153 (`~syslab2/w3_exit_anatomy/results/logs/`); the snapshots alone are 125 MB.
+
+Kernel differs between the boxes (.153 6.8, .154 6.14), so compare within a
+box, not across. The mitigation Δs are all within .153.

@@ -5,6 +5,12 @@ A claim that is not in this table is not established.
 
 | date | experiment | result | established |
 | --- | --- | --- | --- |
+| 2026-09-19 | .153: `-cpu host,pmu=off` on top of host+guest `mitigations=off` | `results/153-w3-nomit-guestnomit-nopmu-ladder.md` | guest-PMU emulation costs **~320 cycles per exit** (VMCALL 2,486 → 2,166). `pmc_event_is_allowed` was 6.5% of the exit |
+| 2026-09-19 | .153: guest `mitigations=off`, host already off | `results/153-w3-nomit-guestnomit-{ladder,prof-L2}.md` | **the guest's own mitigations cost the host ~1,050 cycles per exit** (VMCALL 3,536 → 2,486). `vmx_spec_ctrl_restore_host` 28.4% → 0.9%: a guest `SPEC_CTRL` that differs from the host's forces an MSR swap on every exit |
+| 2026-09-19 | .153: five boot variants, isolation held constant | `results/153-w3-*-ladder.md` | **vmscape IBPB = −13,668 on MMIO→QEMU (45%), −32 on VMCALL**; `nopti` −714 on L7 only (≈ the CR3-surcharge prediction of ~670); `spectre_v2` off −504 on VMCALL; `mitigations=off` −1,024 VMCALL (22%), −20,122 MMIO (66%) |
+| 2026-09-19 | .153: stock boot vs isolated boot | `results/153-default-ladder.md`, `153-w3-base-ladder.md` | isolation **raises p50** (+358 VMCALL, +1,464 MMIO) and **collapses tails** (VMCALL p999 12,112 → 4,978). Cause hypothesised: `nohz_full` context tracking |
+| 2026-09-19 | profile re-render from kallsyms snapshots, 1–4 reboots later | 8 L2/L7 profiles | **identical** top symbols in all 8. The snapshot mechanism survives KASLR |
+| 2026-09-19 | re-rendering .154 profiles after a `kvm_intel` reload | — | **wrong**: 46% attributed to `cleanup_module`. Never published; reports restored from same-boot renders. Motivated the snapshot mechanism |
 | 2026-09-19 | `-M microvm` vs q35, same userspace exit | `results/abl-microvm.md` | **QEMU's machine model is not the cost.** Stripping PCI, ISA and the device tree makes L7 *slower* by 448 (1.6%, within spread). Refutes the "QEMU is bloated" explanation of the userspace surcharge |
 | 2026-09-19 | runtime ablation sweep, n=100k | `results/ablation-summary.md` | **L1D flush = −2,076 cycles on L7, ~0 on L2.** Agrees with `prof-L7`'s 6.41% (1,829 predicted) to within 12%, by two independent methods. apicv/hvtimer/AVX-512 all at or near noise |
 | 2026-09-19 | cycle attribution, L7 (MMIO → QEMU) | `results/prof-L7.md` | **57.09% of the round trip is `arch_exit_to_user_mode_prepare`** — the vmscape IBPB on the kernel→user boundary. Actual MMIO emulation ~5% |

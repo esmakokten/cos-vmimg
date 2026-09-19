@@ -1,0 +1,13 @@
+Warning: unable to open an initial console.
+EXITBENCH config rungs=L0,L2,L3,L6,L7 n=200000 site=kernel chunk=1024 cold=0 gpa=0x40000000 probe=
+  insmod /modules/exit_bench.ko
+--- exit ladder: site=kernel ---
+EXITBENCH rung=L0 name=rdtsc site=kernel mode=hot n=200000 min=54 p50=58 p90=58 p99=60 p999=60 max=4582 mean=57.0 stddev=10.3
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=200000 min=2114 p50=2166 p90=2168 p99=2172 p999=2336 max=6766 mean=2160.8 stddev=45.6
+EXITBENCH rung=L3 name=cpuid site=kernel mode=hot n=200000 min=2128 p50=2180 p90=2188 p99=2218 p999=2358 max=80338 mean=2178.2 stddev=188.8
+EXITBENCH rung=L6 name=pio_e9 site=kernel mode=hot n=200000 min=6300 p50=6388 p90=6426 p99=6552 p999=6746 max=280892 mean=6393.4 stddev=621.2
+note: L7 used gpa 0x40000000
+EXITBENCH rung=L7 name=mmio_unbacked site=kernel mode=hot n=200000 min=8178 p50=8468 p90=8596 p99=8676 p999=9394 max=139948 mean=8473.3 stddev=351.0
+EXITBENCH done rc=0
+EXITBENCH RUN COMPLETE
+reboot: Power down
