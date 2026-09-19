@@ -1,0 +1,8 @@
+# The VM-exit anatomy ladder: one rung per named exit type, plus the
+# post-exit collateral-damage probe. Driven entirely from the kernel command
+# line (see programs/scripts/run_exit_anatomy.sh) so that a sweep over host and
+# QEMU configurations never has to rebuild the image.
+description = "VM exit anatomy: exit ladder + post-exit microarchitectural probe"
+init        = "run_exit_anatomy.sh"
+programs    = ["exit_ladder.c", "uarch_probe.c"]
+modules     = ["exit_bench.c"]

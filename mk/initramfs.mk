@@ -72,6 +72,11 @@ $(STAMPS)/modules: $(STAMPS)/overlay $(KBUILD)/.scaffold
 ifneq ($(RECIPE_MODULES),)
 	@mkdir -p $(RFS)/modules $(BUILD)/$(RECIPE)/modsrc
 	@cp $(addprefix $(TOP)/programs/modules/,$(RECIPE_MODULES)) $(BUILD)/$(RECIPE)/modsrc/
+	@# Headers shared between a module and a program live in programs/.
+	@# Without this a module cannot include the ABI its userspace driver
+	@# uses, and the two drift silently.
+	@if compgen -G "$(TOP)/programs/*.h" > /dev/null; then \
+		cp $(TOP)/programs/*.h $(BUILD)/$(RECIPE)/modsrc/; fi
 	@: > $(BUILD)/$(RECIPE)/modsrc/Kbuild
 	@for o in $(RECIPE_MOD_OBJS); do \
 		echo "obj-m += $$o" >> $(BUILD)/$(RECIPE)/modsrc/Kbuild; \
