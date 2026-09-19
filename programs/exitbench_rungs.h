@@ -98,15 +98,32 @@ static inline void eb_rung_l0_rdtsc(void)
 	/* nothing: the interval brackets only the harness itself */
 }
 
-/* KVM's true fast path. handle_fastpath_set_msr_irqoff() services
- * MSR_IA32_TSC_DEADLINE without unwinding to vcpu_enter_guest() and re-enters
- * the guest with EXIT_FASTPATH_REENTER_GUEST -- the cheapest software round
- * trip KVM has, and therefore the right floor to compare Errand against.
+/* handle_fastpath_set_msr_irqoff() services MSR_IA32_TSC_DEADLINE without
+ * unwinding to vcpu_enter_guest() and re-enters with
+ * EXIT_FASTPATH_REENTER_GUEST.
  *
- * The value is a deadline far enough ahead that it never fires during the run;
- * the caller saves and restores the guest's own deadline around the loop.
- * VERIFY with the path gate: if the guest LAPIC is not in TSC-deadline mode,
- * KVM takes the slow WRMSR path instead and this rung silently becomes L4. */
+ * MEASURED, AND NOT WHAT THE NAME SUGGESTS. On .154 this rung costs ~4,060
+ * cycles against ~3,864 for a no-op VMCALL -- the "fast path" is SLOWER. Two
+ * readings remain open and the path gate (run.sh --trace, needs root)
+ * distinguishes them:
+ *
+ *   (a) the fast path is not being taken at all, or
+ *   (b) it is taken, and it is slower anyway, because servicing the write means
+ *       reprogramming the LAPIC timer -- cancel_apic_timer(), start_apic_timer(),
+ *       a vmcs_write to arm the VMX preemption timer -- work a null VMCALL
+ *       never does.
+ *
+ * If (b), then this rung is not "KVM's software floor" and must not be quoted
+ * as one: it is the cheapest exit KVM actually *services*, which is a different
+ * and still useful quantity. L2 remains the floor for null work.
+ *
+ * (A first fix attempt assumed the deadline was out of the preemption timer's
+ * ~1.4e11-tick range, forcing the start_sw_tscdeadline() hrtimer fallback.
+ * Shortening it from 2^40 to 2^31 changed the p50 by nothing, so that was not
+ * the cause. 2^31 is kept: it is correct regardless, and ~1s at 2.1 GHz is
+ * still far beyond any single sample.)
+ *
+ * The caller saves and restores the guest's own deadline around the loop. */
 static inline void eb_rung_l1_fastpath_msr(eb_u64 deadline)
 {
 	unsigned int lo = (unsigned int)deadline;

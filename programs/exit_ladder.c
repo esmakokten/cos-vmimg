@@ -202,6 +202,7 @@ static void usage(const char *p)
 "  --cold                 pollute caches and branch predictors between samples\n"
 "  --mmio-gpa 0xADDR      L7 target; 0 lets the module pick above RAM\n"
 "  --cpu N                pin to this vCPU (default 0)\n"
+"  --repeat N             run the whole ladder N times (default 1)\n"
 "\n"
 "Every line of output starts with EXITBENCH and is parsed by host/run.sh.\n", p);
 }
@@ -212,7 +213,7 @@ int main(int argc, char **argv)
 	const char *site = "kernel";
 	uint64_t n = 200000, chunk = 0, gpa = 0;
 	uint32_t flags = 0;
-	int cpu = 0, fd = -1, i, rc = 0;
+	int cpu = 0, fd = -1, i, rc = 0, repeat = 1, pass;
 	uint64_t *s;
 
 	for (i = 1; i < argc; i++) {
@@ -222,6 +223,11 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--chunk") && i + 1 < argc) chunk = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--mmio-gpa") && i + 1 < argc) gpa = strtoull(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--cpu") && i + 1 < argc)   cpu = atoi(argv[++i]);
+		/* Repeat the whole ladder without growing the sample buffer. The
+		 * profiler needs the guest to stay in the measured loop for tens
+		 * of seconds; raising --n instead would ask the module to vmalloc
+		 * hundreds of megabytes inside a 512 MB guest, which fails. */
+		else if (!strcmp(argv[i], "--repeat") && i + 1 < argc) repeat = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--cold"))                  flags |= EXITBENCH_F_COLD;
 		else { usage(argv[0]); return 1; }
 	}
@@ -244,6 +250,7 @@ int main(int argc, char **argv)
 		}
 	}
 
+	for (pass = 0; pass < repeat; pass++)
 	for (i = 0; i < RUNG_MAX; i++) {
 		char needle[8];
 		int r;

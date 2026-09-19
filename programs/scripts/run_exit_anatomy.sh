@@ -13,6 +13,7 @@
 #   eb.probe=none,vmcall,cpuid,pio,mmio   collateral-damage probe rungs
 #   eb.reps=400            probe repetitions
 #   eb.hold=1              drop to a shell instead of powering off
+#   eb.repeat=N            run the whole ladder N times (for profiling windows)
 set -eu
 
 cmdline_get() {
@@ -33,6 +34,7 @@ GPA=$(cmdline_get eb.mmio_gpa 0)
 PROBE=$(cmdline_get eb.probe "")
 REPS=$(cmdline_get eb.reps 400)
 HOLD=$(cmdline_get eb.hold 0)
+REPEAT=$(cmdline_get eb.repeat 1)
 
 echo "EXITBENCH config rungs=$RUNGS n=$N site=$SITE chunk=$CHUNK cold=$COLD gpa=$GPA probe=$PROBE"
 
@@ -56,7 +58,7 @@ COLDFLAG=""
 run_site() {
 	echo "--- exit ladder: site=$1 ---"
 	/programs/exit_ladder --rungs "$RUNGS" --site "$1" --n "$N" \
-		--chunk "$CHUNK" --mmio-gpa "$GPA" $COLDFLAG || \
+		--chunk "$CHUNK" --mmio-gpa "$GPA" --repeat "$REPEAT" $COLDFLAG || \
 		echo "EXITBENCH site=$1 FAILED rc=$?"
 }
 

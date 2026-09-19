@@ -1,0 +1,2 @@
+Unable to read current time from RTC
+qemu-system-x86_64: terminating on signal 15 from pid 1991880 ()

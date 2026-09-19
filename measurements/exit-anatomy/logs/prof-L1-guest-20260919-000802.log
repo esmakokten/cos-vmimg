@@ -1,0 +1,60 @@
+Warning: unable to open an initial console.
+EXITBENCH config rungs=L1 n=1000000 site=kernel chunk=1024 cold=0 gpa=0x40000000 probe=
+  insmod /modules/exit_bench.ko
+--- exit ladder: site=kernel ---
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4062 p99=4074 p999=16538 max=622006 mean=4085.5 stddev=1178.3
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4062 p99=4074 p999=17382 max=587822 mean=4084.7 stddev=949.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4064 p99=4076 p999=16636 max=2588388 mean=4088.4 stddev=2754.3
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4054 p90=4062 p99=4074 p999=17008 max=564782 mean=4085.4 stddev=1049.7
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4074 p999=16670 max=674216 mean=4084.9 stddev=991.3
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4062 p99=4074 p999=17122 max=627980 mean=4085.0 stddev=973.8
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4054 p90=4062 p99=4072 p999=16936 max=1283242 mean=4086.1 stddev=2029.8
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4064 p99=4076 p999=16542 max=617620 mean=4086.7 stddev=1097.2
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4066 p99=4076 p999=17086 max=571310 mean=4086.2 stddev=908.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4078 p999=16680 max=523220 mean=4085.9 stddev=911.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4064 p99=4076 p999=17118 max=143900 mean=4085.1 stddev=727.2
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4064 p99=4076 p999=17028 max=1861562 mean=4088.0 stddev=2185.5
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4076 p999=16992 max=571614 mean=4085.9 stddev=1054.8
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4052 p90=4060 p99=4072 p999=16476 max=522446 mean=4082.9 stddev=888.5
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4076 p999=17038 max=544368 mean=4085.1 stddev=891.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4076 p999=18622 max=571278 mean=4087.6 stddev=951.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4076 p999=19348 max=2600332 mean=4092.3 stddev=2792.3
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4066 p99=4078 p999=19016 max=241382 mean=4091.3 stddev=870.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4054 p90=4064 p99=4076 p999=18018 max=622500 mean=4088.6 stddev=1063.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4062 p99=4072 p999=16956 max=457270 mean=4085.3 stddev=935.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4028 p50=4054 p90=4062 p99=4074 p999=17074 max=556972 mean=4084.4 stddev=932.0
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4056 p90=4066 p99=4076 p999=16392 max=1901150 mean=4088.6 stddev=2181.3
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4064 p99=4076 p999=16426 max=566656 mean=4089.6 stddev=1060.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4076 p999=16898 max=441528 mean=4092.1 stddev=877.0
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4062 p99=4076 p999=17062 max=1354346 mean=4091.3 stddev=1624.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4062 p99=4074 p999=17366 max=525540 mean=4087.3 stddev=912.0
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4054 p90=4064 p99=4074 p999=16742 max=2540704 mean=4093.5 stddev=3406.1
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4064 p99=4076 p999=16658 max=1373652 mean=4088.0 stddev=1648.7
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4058 p90=4066 p99=4078 p999=16692 max=520822 mean=4088.0 stddev=964.2
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4064 p99=4076 p999=16980 max=129028 mean=4085.8 stddev=716.2
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4066 p99=4076 p999=16828 max=575458 mean=4090.6 stddev=934.2
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4028 p50=4056 p90=4064 p99=4076 p999=17172 max=1895848 mean=4092.5 stddev=2261.7
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4066 p99=4076 p999=16730 max=521876 mean=4087.4 stddev=896.0
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4066 p99=4076 p999=17144 max=514156 mean=4086.6 stddev=900.0
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4066 p99=4078 p999=17132 max=553164 mean=4092.2 stddev=922.8
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4056 p90=4064 p99=4076 p999=17714 max=2500716 mean=4092.1 stddev=2713.9
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4054 p90=4062 p99=4074 p999=17154 max=526950 mean=4084.9 stddev=897.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4066 p99=4076 p999=16836 max=543874 mean=4087.0 stddev=1034.5
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4064 p99=4076 p999=17096 max=544400 mean=4086.2 stddev=893.7
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4064 p99=4076 p999=17118 max=520114 mean=4086.3 stddev=882.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4058 p90=4066 p99=4076 p999=17636 max=1881192 mean=4094.3 stddev=2145.0
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4056 p90=4064 p99=4076 p999=17084 max=540896 mean=4086.7 stddev=1034.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4036 p50=4062 p90=4070 p99=4082 p999=17400 max=522066 mean=4092.6 stddev=906.0
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4066 p99=4076 p999=17220 max=525110 mean=4086.7 stddev=894.1
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4056 p90=4064 p99=4076 p999=17168 max=558662 mean=4086.0 stddev=909.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4058 p90=4066 p99=4076 p999=17112 max=2532844 mean=4090.1 stddev=2685.5
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4062 p90=4072 p99=4084 p999=17868 max=542874 mean=4097.5 stddev=1079.7
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4060 p90=4070 p99=4084 p999=20462 max=240442 mean=4096.7 stddev=887.1
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4056 p90=4066 p99=4078 p999=19252 max=587894 mean=4091.6 stddev=1060.2
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4064 p99=4076 p999=18112 max=582782 mean=4088.6 stddev=997.5
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4066 p99=4076 p999=18176 max=2585640 mean=4096.2 stddev=2816.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4030 p50=4056 p90=4066 p99=4078 p999=17568 max=528552 mean=4095.1 stddev=1110.4
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4032 p50=4054 p90=4064 p99=4074 p999=17278 max=580896 mean=4085.7 stddev=963.6
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4054 p90=4062 p99=4074 p999=17200 max=519052 mean=4084.8 stddev=902.1
+EXITBENCH rung=L1 name=fastpath_msr site=kernel mode=hot n=1000000 min=4034 p50=4056 p90=4064 p99=4076 p999=17654 max=520336 mean=4086.6 stddev=916.8
+qemu-system-x86_64: terminating on signal 15 from pid 1981447 ()

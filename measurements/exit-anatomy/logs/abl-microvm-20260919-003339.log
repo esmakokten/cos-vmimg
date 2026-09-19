@@ -1,0 +1,75 @@
+Linux version 6.6.155 (cos-vmimg@cos-vmimg) (gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #5 SMP PREEMPT_DYNAMIC Tue Nov 14 10:13:20 PM UTC 2023
+Command line: console=ttyS0 eb.rungs=L0,L2,L7 eb.n=100000 eb.site=kernel eb.chunk=1024 eb.cold=0 eb.mmio_gpa=0x40000000 eb.reps=400 eb.hold=0 eb.repeat=1
+BIOS-provided physical RAM map:
+BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+BIOS-e820: [mem 0x0000000000100000-0x000000001fffefff] usable
+BIOS-e820: [mem 0x000000001ffff000-0x000000001fffffff] reserved
+BIOS-e820: [mem 0x00000000feffc000-0x00000000feffffff] reserved
+BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+NX (Execute Disable) protection: active
+APIC: Static calls initialized
+SMBIOS 2.4 present.
+DMI: Bochs Bochs, BIOS Bochs 01/01/2011
+last_pfn = 0x1ffff max_arch_pfn = 0x400000000
+MTRR map: 4 entries (3 fixed + 1 variable; max 19), built from 8 variable MTRRs
+x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+Using GB pages for direct mapping
+RAMDISK: [mem 0x1fe05000-0x1ffeffff]
+ACPI: Early table checksum verification disabled
+ACPI: RSDP 0x00000000000F4250 000024 (v02 BOCHS )
+ACPI: XSDT 0x000000001FFFFFAE 000034 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+ACPI: FACP 0x000000001FFFFE50 00010C (v05 BOCHS  BXPC     00000001 BXPC 00000001)
+ACPI: DSDT 0x000000001FFFFD00 000150 (v02 BOCHS  BXPC     00000001 BXPC 00000001)
+ACPI: APIC 0x000000001FFFFF5C 000052 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+ACPI: Reserving FACP table memory at [mem 0x1ffffe50-0x1fffff5b]
+ACPI: Reserving DSDT table memory at [mem 0x1ffffd00-0x1ffffe4f]
+ACPI: Reserving APIC table memory at [mem 0x1fffff5c-0x1fffffad]
+Zone ranges:
+  DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+  DMA32    [mem 0x0000000001000000-0x000000001fffefff]
+  Normal   empty
+Movable zone start for each node
+Early memory node ranges
+  node   0: [mem 0x0000000000001000-0x000000000009efff]
+  node   0: [mem 0x0000000000100000-0x000000001fffefff]
+Initmem setup node 0 [mem 0x0000000000001000-0x000000001fffefff]
+On node 0, zone DMA: 1 pages in unavailable ranges
+On node 0, zone DMA: 97 pages in unavailable ranges
+On node 0, zone DMA32: 1 pages in unavailable ranges
+ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])
+IOAPIC[0]: apic_id 0, version 32, address 0xfec00000, GSI 0-23
+IOAPIC[1]: apic_id 1, version 32, address 0xfec10000, GSI 24-47
+ACPI: Using ACPI (MADT) for SMP configuration information
+TSC deadline timer available
+smpboot: Allowing 1 CPUs, 0 hotplug CPUs
+[mem 0x20000000-0xfeffbfff] available for PCI devices
+clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+setup_percpu: NR_CPUS:64 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+percpu: Embedded 44 pages/cpu s139728 r8192 d32304 u2097152
+Kernel command line: console=ttyS0 eb.rungs=L0,L2,L7 eb.n=100000 eb.site=kernel eb.chunk=1024 eb.cold=0 eb.mmio_gpa=0x40000000 eb.reps=400 eb.hold=0 eb.repeat=1
+random: crng init done
+Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+Built 1 zonelists, mobility grouping on.  Total pages: 128767
+mem auto-init: stack:off, heap alloc:off, heap free:off
+Memory: 491348K/523892K available (10240K kernel code, 934K rwdata, 2316K rodata, 3548K init, 1572K bss, 32288K reserved, 0K cma-reserved)
+SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+Kernel/User page tables isolation: enabled
+Dynamic Preempt: full
+rcu: Preemptible hierarchical RCU implementation.
+rcu: 	RCU restricting CPUs from NR_CPUS=64 to nr_cpu_ids=1.
+	Trampoline variant of Tasks RCU enabled.
+rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+NR_IRQS: 4352, nr_irqs: 56, preallocated irqs: 0
+rcu: srcu_init: Setting srcu_struct sizes based on contention.
+Console: colour *CGA 80x25
+printk: console [ttyS0] enabled
+ACPI: Core revision 20230628
+APIC: Switch to symmetric I/O mode setup
+tsc: Unable to calibrate against PIT
+tsc: No reference (HPET/PMTIMER) available
+tsc: Marking TSC unstable due to could not calculate TSC khz
+qemu-system-x86_64: terminating on signal 15 from pid 1996645 (timeout)

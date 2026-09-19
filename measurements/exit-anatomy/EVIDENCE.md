@@ -5,6 +5,11 @@ A claim that is not in this table is not established.
 
 | date | experiment | result | established |
 | --- | --- | --- | --- |
+| 2026-09-19 | `-M microvm` vs q35, same userspace exit | `results/abl-microvm.md` | **QEMU's machine model is not the cost.** Stripping PCI, ISA and the device tree makes L7 *slower* by 448 (1.6%, within spread). Refutes the "QEMU is bloated" explanation of the userspace surcharge |
+| 2026-09-19 | runtime ablation sweep, n=100k | `results/ablation-summary.md` | **L1D flush = −2,076 cycles on L7, ~0 on L2.** Agrees with `prof-L7`'s 6.41% (1,829 predicted) to within 12%, by two independent methods. apicv/hvtimer/AVX-512 all at or near noise |
+| 2026-09-19 | cycle attribution, L7 (MMIO → QEMU) | `results/prof-L7.md` | **57.09% of the round trip is `arch_exit_to_user_mode_prepare`** — the vmscape IBPB on the kernel→user boundary. Actual MMIO emulation ~5% |
+| 2026-09-19 | cycle attribution, L2 (VMCALL) | `results/prof-L2.md` | **Under 5% of a KVM exit does the exit's work.** 30% assembly transition, 20% MSR traffic (`vmx_spec_ctrl_restore_host` alone 12.8%), 8% XSAVE state per exit, 4.4% request sweep |
+| 2026-09-19 | cycle attribution, L1 (fast-path WRMSR) | `results/prof-L1.md` | the fast path **is** entered, then ~13% of the exit goes to LAPIC timer machinery: `start_hv_timer` fails and `start_sw_timer`/`hrtimer` runs every iteration. Explains L1 > L2 |
 | 2026-09-18 | preliminary baseline, all rungs, n=200k, qemu/q35 | `results/baseline-qemu-prelim.md` | the ladder runs end to end; re-baseline below; L1 refuted as a floor |
 | 2026-09-18 | L1 deadline range, 2^40 → 2^31 | `results/logs/diag-L1b-*.log` | **refuted**: shortening the deadline changed the p50 by nothing, so the preemption-timer range was not why L1 is slow |
 | 2026-09-18 | guest boot, verbose | `results/logs/diag-L1-*.log` | the guest reports `TSC deadline timer available`, so the LAPIC mode is not obviously the reason either |
@@ -55,7 +60,7 @@ Each must pass before the rows below it mean anything.
 | gate | what it checks | how | status |
 | --- | --- | --- | --- |
 | G1 determinism | L0 p99/p50 < 1.02, max < 2× p50 over 200k | `run.sh --label gate-L0 --rungs L0` | 🟡 p99/p50 = 1.09 ✓ on the body, but max = 22,064 ✗ — needs `isolcpus` and the performance governor |
-| G2 path | each rung's exit reason and userspace split match its name | `run.sh --trace`, one rung at a time | ⬜ **blocked on root**; L1 is the open question |
+| G2 path | each rung's exit reason and userspace split match its name | `run.sh --trace`, one rung at a time | 🟡 answered for L1/L2/L7 by `perf` attribution instead: L7 shows `arch_exit_to_user_mode_prepare` + `write_mmio`, so it does reach userspace; L2 shows `kvm_emulate_hypercall` and no user-mode exit; L1's fast path confirmed entered. `trace-cmd` counts still owed |
 | G3 reproduction | the new harness reproduces the recorded numbers | done, see above | ✅ reproduced and explained |
 | G4 exit count | `kvm:kvm_exit` over a window equals the iteration rate | `pmu.sh` denominator check | ⬜ blocked on root |
 | G5 accounting | ablation Δs + the 676-cycle floor sum to within ~10% of L2 and L7 | `ablate.sh --summarise` | ⬜ |
