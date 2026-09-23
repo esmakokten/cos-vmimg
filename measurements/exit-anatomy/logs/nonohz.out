@@ -1,0 +1,14 @@
+cmdline: BOOT_IMAGE=/vmlinuz-6.8.0-94-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro isolcpus=2 mitigations=off
+kvm_intel: apicv=N hvtimer=N
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=200000 min=1822 p50=1830 p90=1840 p99=1846 p999=4968 max=17992 mean=1837.1 stddev=176.8
+EXITBENCH rung=L7 name=mmio_unbacked site=kernel mode=hot n=200000 min=7676 p50=7902 p90=7968 p99=8146 p999=13344 max=271940 mean=7926.5 stddev=801.2
+prof rc=0
+    24.63%  [k] vmx_vmexit                                                 [kvm_intel]        -      -            
+    14.42%  [k] native_write_msr                                           [kernel.kallsyms]  -      -            
+     6.82%  [k] vcpu_enter_guest                                           [kvm]              -      -            
+     6.64%  [k] kvm_load_host_xsave_state.part.0                           [kvm]              -      -            
+     4.35%  [k] vmx_vcpu_run                                               [kvm_intel]        -      -            
+     3.59%  [k] __srcu_read_lock                                           [kernel.kallsyms]  -      -            
+     3.53%  [k] kvm_load_guest_xsave_state.part.0                          [kvm]              -      -            
+     3.25%  [k] native_read_msr                                            [kernel.kallsyms]  -      -            
+modprobe: FATAL: Module kvm_intel is in use.

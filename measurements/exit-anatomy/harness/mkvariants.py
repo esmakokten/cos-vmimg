@@ -15,6 +15,11 @@ VARIANTS = [
     ("w3-nopti",     ISO + " nopti"),
     ("w3-nospectre", ISO + " spectre_v2=off spectre_v2_user=off retbleed=off"),
     ("w3-nomit",     ISO + " mitigations=off"),
+    # isolcpus without nohz_full/rcu_nocbs. nohz_full turns on context tracking
+    # and vtime accounting, which the profile shows costing ~170 cycles on every
+    # exit; this entry turns that share into a measured difference while keeping
+    # the core isolated so the tails stay comparable.
+    ("w3-nomit-nonohz", "isolcpus=2 mitigations=off"),
 ]
 
 cfg = open("/boot/grub/grub.cfg").read().splitlines()

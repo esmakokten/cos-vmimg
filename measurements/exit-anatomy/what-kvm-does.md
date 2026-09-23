@@ -37,6 +37,92 @@ Two questions:
 
 ---
 
+## Why stripped KVM stops at 1,636 — the feature ladder
+
+Everything below is one boot (`w3-nomit`, or `w3-nomit-nonohz` where noted) on
+.153, guest `mitigations=off` throughout, n=200,000, p50 cycles. Each rung
+removes one thing the guest never uses, cumulatively, so each Δ is that thing's
+per-exit cost. Results `results/153-strip-*`.
+
+| rung | VMCALL | Δ | MMIO→QEMU | Δ | what it removes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| mitigations off, nothing else | 2,502 | | 8,970 | | |
+| `-cpu host,pmu=off` | 2,168 | −334 | 8,616 | −354 | guest PMU emulation |
+| `,-pku` | 2,162 | −6 | 8,516 | −100 | PKRU in the XSAVE control swap |
+| `kvm-intel.enable_apicv=0` | 2,090 | −72 | 8,550 | +34 | posted-interrupt / RVI sync per entry |
+| `kvm-intel.preemption_timer=0` | 2,042 | −48 | 8,254 | −296 | arming the VMX preemption timer |
+| boot without `nohz_full` | 1,830 | **−212** | 7,902 | −352 | context tracking + vtime accounting |
+| `freeze_on_smi=0` | **1,636** | **−194** | **7,644** | −258 | **one `WRMSR` of `IA32_DEBUGCTL` per exit** |
+| hardware `VMEXIT`+`VMRESUME` | 676 | | | | Errand's null slot, this box |
+
+**`freeze_on_smi` is the surprise.** A probe on the `msr:` tracepoints showed
+`IA32_DEBUGCTL` (0x1D9) read **3,579,314** times and written **3,550,262** times
+across **3,612,237** exits — one of each, every exit. A VM exit zeroes
+`DEBUGCTL` in hardware, so KVM restores the host's value, but only when that
+value is non-zero. It is `0x4000` here: bit 14, `FREEZE_WHILE_SMM`, which Linux
+sets by default through `/sys/devices/cpu/freeze_on_smi`. **A perf tunable with
+nothing to do with virtualization costs 194 cycles on every VM exit**, and one
+sysfs write removes it. (Everything else on the MSR list — `LSTAR`,
+`KERNEL_GS_BASE`, `TSC_AUX`, ~430 writes each — is per-`ioctl`, not per-exit.)
+
+`nohz_full` is the second: it turns on context tracking and vtime accounting, so
+every guest entry and exit does RCU state transitions and reads `sched_clock`.
+The profile predicted 177 cycles for that group and the boot variant measured
+212 — the hypothesis from the earlier sweep, now a number.
+
+### Where the last 960 cycles go
+
+Profile of the most-stripped configuration (`results/153-strip-s6-prof-L2.md`,
+20 s). The profile samples host software only — the hardware pair is not in it —
+so the shares divide `1,636 − 676 = 960` cycles.
+
+| group | share | cycles |
+| --- | ---: | ---: |
+| VM transition assembly (+ exit skid) | 37.8% | 363 |
+| XSAVE control state (XCR0/XSS/PKRU) | 16.9% | 162 |
+| exit classify + emulate | 12.3% | 118 |
+| run loop + request sweep | 12.0% | 116 |
+| residual MSR (DEBUGCTL read, autoswitch list, SPEC_CTRL) | 10.6% | 102 |
+| SRCU | 4.0% | 39 |
+| below 0.5% cutoff | 3.0% | 29 |
+| residual APIC/timer/PML | 2.1% | 20 |
+| other listed | 1.2% | 11 |
+| **total host software** | **100%** | **960** |
+
+**The answer to "why can't it do better" is that there is no big rock left.**
+Nine groups, none above 363 cycles, and the largest is the assembly that saves
+and restores GPRs around `VMRESUME` plus whatever exit-transition time the
+sampler skids onto it. Sorted by *why* each exists:
+
+- **Work any VMM must do** — transition assembly, exit classification,
+  emulating the instruction: **~480 cycles**. Errand pays an analogue, smaller
+  (fewer `VMREAD`s, no segment cache).
+- **State swapped for a guest that never touches it** — XSAVE control
+  registers, the residual MSR list: **~260 cycles**.
+- **The price of living inside a general-purpose kernel** — the `vcpu_enter_guest`
+  loop and its request sweep, SRCU, RCU: **~155 cycles**, and this is the part
+  no configuration removes, because it is what KVM *is*.
+
+### What this does to the comparison with Errand
+
+| | total | software above hardware |
+| --- | ---: | ---: |
+| KVM, stock isolated boot, all mitigations | 4,560 | 3,884 |
+| KVM, mitigations off both sides | 2,502 | 1,826 |
+| KVM, every optional feature also off | **1,636** | **960** |
+| Errand, after the CR3 policy | **942** | **266** |
+
+Against stock KVM, Errand is **4.8×** cheaper. Against KVM stripped of
+everything Errand does not implement, **1.7×** — and on the software term
+alone, **3.6×**. The honest headline is the last one: when both systems are
+configured to do the same work, Errand's exit path costs about a quarter of
+KVM's, and the rest of the apparent gap is mitigations and features.
+
+That reframes the paper's claim from "VM exits are cheaper in Errand" to
+something a reviewer cannot wave away: **the exit itself was never the
+expensive part — the cost is everything a general-purpose VMM re-establishes
+around it.**
+
 ## The answer, on the machine Errand runs on (.153)
 
 Measured on **.153** — the R740 every Errand number comes from — booted from
@@ -55,6 +141,7 @@ Results `results/153-*-ladder.md`.
 | host `mitigations=off` | 3,536 | **−1,024** | host IBRS `SPEC_CTRL` write + RSB fill (−504, `nospectre` row), MDS `VERW` / L1TF (~−520, residual) |
 | + guest `mitigations=off` | 2,486 | **−1,050** | the `SPEC_CTRL` **swap forced by the guest's own mitigations** — `vmx_spec_ctrl_restore_host` 28.4% → 0.9% of the exit |
 | + `-cpu host,pmu=off` | 2,166 | **−320** | guest-PMU emulation: every emulated instruction is a PMU event to filter (`pmc_event_is_allowed`, 6.5%) |
+| *(continues — see the feature ladder above, down to 1,636)* | | | |
 | hardware `VMEXIT`+`VMRESUME` | 676 | | Errand's null-VMCALL slot, this box |
 
 **4,560 = 676 hardware + ~1,490 structural KVM software + 1,024 host mitigations
@@ -109,10 +196,11 @@ measurement.** The ablation Δs are the measurements.
 | stock boot | 4,202 / 12,112 | 28,802 / 38,362 |
 | isolated | 4,560 / **4,978** | 30,266 / **30,566** |
 
-Isolation raises the p50 and collapses the tail. The p50 cost is most likely
-`nohz_full` turning on context tracking, which adds work to every guest
-entry/exit and every syscall — a real-time configuration charging the exit path
-for its determinism. **[hypothesis — separate `isolcpus` from `nohz_full` to test]**
+Isolation raises the p50 and collapses the tail. **Confirmed**: a boot with
+`isolcpus` but without `nohz_full` is 212 cycles faster per exit, so the p50
+cost is `nohz_full` turning on context tracking and vtime accounting — a
+real-time configuration charging the exit path for its determinism. The tails
+are what it buys.
 
 ---
 
@@ -210,9 +298,10 @@ pays.**
 | item | how |
 | --- | --- |
 | split the ~520-cycle host-mitigation residual on VMCALL between MDS `VERW` and L1TF | boot variants `mds=off tsx_async_abort=off mmio_stale_data=off` vs `kvm-intel.vmentry_l1d_flush=never` |
-| separate `isolcpus` from `nohz_full` in the isolation cost | two more boot variants |
-| does Errand swap `SPEC_CTRL` on its exit path when the guest runs mitigations? | read Composite's VM exit path; if not, that is a gap, not a speedup |
+| name what the `vmx_vmexit` 363 cycles actually are — real work vs exit-transition skid | the patched-`kvm_intel` TSC ladder; a sampler cannot separate these |
+| does Errand swap `SPEC_CTRL`, restore `DEBUGCTL`, or reload XSAVE control state on its exit path? | read Composite's exit path. Each one Errand skips is either a trust-model argument or a gap |
 | the same sweep on .154's 6.14 kernel | the vmscape share there (57%) suggests the cost differs by kernel |
+| ~~is `freeze_on_smi` set on the .154 runs too?~~ | **yes, `1` on both boxes.** Every number in this file except the `freeze_on_smi=0` rung carries that `DEBUGCTL` write |
 
 ## Beyond latency: what the exit costs the guest afterwards
 

@@ -21,6 +21,7 @@ LABEL=""; VMM="qemu"; RUNG="L2"; SECONDS_RUN=15; FREQ=20000; NSAMP=1000000
 KPROBE_CHECK=0
 FROM_PERF=""
 GUEST_APPEND=""
+CPU_MODEL_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -33,6 +34,10 @@ while [[ $# -gt 0 ]]; do
 	--kprobe-check) KPROBE_CHECK=1; shift ;;
 	--from-perf) FROM_PERF="$2"; shift 2 ;;
 	--guest-append) GUEST_APPEND="$2"; shift 2 ;;
+	# Must be forwarded: a profile of a "feature-stripped" configuration that
+	# silently ran with the vPMU back on would be attributing cycles to a
+	# config nobody measured.
+	--cpu-model) CPU_MODEL_OVERRIDE="$2"; shift 2 ;;
 	*) die "unknown option: $1" ;;
 	esac
 done
@@ -118,6 +123,7 @@ PERFDATA="$LOGS/${LABEL}-$(date +%Y%m%d-%H%M%S).perf"
 
 log "starting guest in the background on rung $RUNG (n=$NSAMP, long enough to profile)"
 GA=(); [[ -n "$GUEST_APPEND" ]] && GA=(--guest-append "$GUEST_APPEND")
+[[ -n "$CPU_MODEL_OVERRIDE" ]] && GA+=(--cpu-model "$CPU_MODEL_OVERRIDE")
 "$HERE/run.sh" --label "${LABEL}-guest" --vmm "$VMM" --rungs "$RUNG" "${GA[@]}" \
 	--n "$NSAMP" --repeat 400 --timeout $(( SECONDS_RUN + 180 )) >/dev/null 2>&1 &
 RUNPID=$!

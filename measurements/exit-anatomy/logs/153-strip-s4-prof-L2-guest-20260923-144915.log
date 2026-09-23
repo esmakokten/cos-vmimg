@@ -1,0 +1,32 @@
+Warning: unable to open an initial console.
+EXITBENCH config rungs=L2 n=1000000 site=kernel chunk=1024 cold=0 gpa=0x40000000 probe=
+  insmod /modules/exit_bench.ko
+--- exit ladder: site=kernel ---
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2036 p90=2044 p99=2052 p999=2464 max=233128 mean=2038.2 stddev=253.3
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2036 p90=2042 p99=2054 p999=2470 max=186504 mean=2038.6 stddev=204.9
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2034 p90=2040 p99=2052 p999=2466 max=186696 mean=2037.1 stddev=205.3
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2156 p90=2166 p99=11396 p999=12764 max=87352 mean=2235.7 stddev=1135.4
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2162 p90=2168 p99=11998 p999=12928 max=169164 mean=2401.2 stddev=1507.4
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2162 p90=2170 p99=12002 p999=12986 max=168618 mean=2401.5 stddev=1519.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2166 p90=2174 p99=12054 p999=13034 max=155224 mean=2406.5 stddev=1527.7
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2162 p90=2170 p99=11990 p999=12982 max=159096 mean=2401.1 stddev=1532.0
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2166 p90=2176 p99=12006 p999=13024 max=124898 mean=2405.8 stddev=1518.7
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2162 p90=2170 p99=12010 p999=13300 max=147880 mean=2399.1 stddev=1539.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2164 p90=2176 p99=12026 p999=16442 max=147548 mean=2403.8 stddev=1554.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2162 p90=2170 p99=11994 p999=12948 max=144126 mean=2401.4 stddev=1505.9
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2164 p90=2170 p99=12012 p999=13002 max=152374 mean=2402.2 stddev=1519.8
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2164 p90=2174 p99=11988 p999=12966 max=148700 mean=2403.8 stddev=1509.7
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2164 p90=2176 p99=12022 p999=13350 max=152904 mean=2404.2 stddev=1550.8
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2162 p90=2170 p99=11996 p999=12958 max=137698 mean=2401.2 stddev=1512.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2150 p50=2162 p90=2172 p99=12010 p999=13130 max=140098 mean=2399.9 stddev=1533.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2152 p50=2162 p90=2170 p99=11994 p999=12978 max=154684 mean=2400.6 stddev=1524.0
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2028 p50=2162 p90=2168 p99=11970 p999=13050 max=167522 mean=2371.5 stddev=1481.9
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2036 p90=2044 p99=2088 p999=3068 max=150016 mean=2044.4 stddev=294.9
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2034 p90=2042 p99=2076 p999=2476 max=162736 mean=2037.0 stddev=187.4
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2034 p90=2040 p99=2052 p999=2298 max=130968 mean=2036.5 stddev=157.4
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2034 p90=2042 p99=2074 p999=2476 max=124816 mean=2037.0 stddev=149.5
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2036 p90=2042 p99=2054 p999=2470 max=118072 mean=2037.8 stddev=141.1
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2026 p50=2034 p90=2042 p99=2052 p999=2288 max=124736 mean=2036.7 stddev=147.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2028 p50=2036 p90=2042 p99=2052 p999=2438 max=129354 mean=2037.8 stddev=151.1
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=1000000 min=2028 p50=2040 p90=2046 p99=2054 p999=2406 max=129902 mean=2041.2 stddev=152.8
+qemu-system-x86_64: terminating on signal 15 from pid 2708 (timeout)

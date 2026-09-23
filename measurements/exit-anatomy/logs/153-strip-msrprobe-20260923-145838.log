@@ -1,0 +1,16 @@
+Warning: unable to open an initial console.
+EXITBENCH config rungs=L2 n=4000000 site=kernel chunk=1024 cold=0 gpa=0x40000000 probe=
+  insmod /modules/exit_bench.ko
+--- exit ladder: site=kernel ---
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1820 p90=1828 p99=1834 p999=4350 max=279954 mean=1826.5 stddev=258.3
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1818 p90=1826 p99=1856 p999=4342 max=193714 mean=1825.6 stddev=226.5
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1806 p50=1820 p90=1828 p99=1860 p999=4312 max=192210 mean=1826.9 stddev=227.7
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1820 p90=1826 p99=1860 p999=4388 max=182426 mean=1827.3 stddev=234.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1806 p50=1820 p90=1826 p99=1860 p999=4358 max=107782 mean=1827.0 stddev=192.8
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1820 p90=1826 p99=1856 p999=4350 max=179600 mean=1826.1 stddev=230.6
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1820 p90=1832 p99=1858 p999=4356 max=159788 mean=1827.7 stddev=204.1
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1820 p90=1826 p99=1858 p999=4352 max=161476 mean=1827.0 stddev=210.9
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1820 p90=1826 p99=1860 p999=4358 max=180506 mean=1825.7 stddev=212.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1818 p90=1826 p99=1846 p999=4368 max=175778 mean=1825.5 stddev=210.2
+EXITBENCH rung=L2 name=vmcall site=kernel mode=hot n=4000000 min=1804 p50=1820 p90=1826 p99=1846 p999=4378 max=190038 mean=1827.1 stddev=242.4
+qemu-system-x86_64: terminating on signal 15 from pid 3344 ()

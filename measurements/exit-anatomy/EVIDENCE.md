@@ -5,6 +5,11 @@ A claim that is not in this table is not established.
 
 | date | experiment | result | established |
 | --- | --- | --- | --- |
+| 2026-09-23 | .153: profile of the most-stripped config | `results/153-strip-s6-prof-L2.md` | the last **960 cycles** of KVM software split nine ways, none above 363: transition asm 363, XSAVE control 162, classify+emulate 118, run loop 116, residual MSR 102, SRCU 39, APIC/PML 20 |
+| 2026-09-23 | .153: `freeze_on_smi=0` | `results/153-strip-s6-nofreezesmi.md` | **−194 cycles per exit.** `msr:` tracepoints showed `IA32_DEBUGCTL` read+written once per exit (3.58M/3.55M over 3.61M exits); a VM exit zeroes it and KVM restores the host's non-zero `0x4000` (`FREEZE_WHILE_SMM`). A perf tunable unrelated to virtualisation |
+| 2026-09-23 | .153: boot with `isolcpus` but no `nohz_full` | `results/153-strip-s5-nonohz.md` | **−212 cycles.** Confirms the earlier hypothesis: context tracking + vtime accounting on every entry/exit. Profile had predicted 177 |
+| 2026-09-23 | .153: feature-stripping ladder (vPMU, PKU, APICv, preemption timer) | `results/153-strip-s[0-4]*.md` | features total **−460** on VMCALL: vPMU −334, PKU −6, APICv −72, preemption timer −48 |
+| 2026-09-23 | profiled vs unprofiled run of the same config | `153-strip-s5-nonohz{,-prof-L2-guest}` | 1,820 vs 1,830 — **`perf` does not perturb the measured path**, so profile shares are representative |
 | 2026-09-19 | .153: `-cpu host,pmu=off` on top of host+guest `mitigations=off` | `results/153-w3-nomit-guestnomit-nopmu-ladder.md` | guest-PMU emulation costs **~320 cycles per exit** (VMCALL 2,486 → 2,166). `pmc_event_is_allowed` was 6.5% of the exit |
 | 2026-09-19 | .153: guest `mitigations=off`, host already off | `results/153-w3-nomit-guestnomit-{ladder,prof-L2}.md` | **the guest's own mitigations cost the host ~1,050 cycles per exit** (VMCALL 3,536 → 2,486). `vmx_spec_ctrl_restore_host` 28.4% → 0.9%: a guest `SPEC_CTRL` that differs from the host's forces an MSR swap on every exit |
 | 2026-09-19 | .153: five boot variants, isolation held constant | `results/153-w3-*-ladder.md` | **vmscape IBPB = −13,668 on MMIO→QEMU (45%), −32 on VMCALL**; `nopti` −714 on L7 only (≈ the CR3-surcharge prediction of ~670); `spectre_v2` off −504 on VMCALL; `mitigations=off` −1,024 VMCALL (22%), −20,122 MMIO (66%) |
