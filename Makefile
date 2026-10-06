@@ -69,6 +69,7 @@ MANIFEST  := $(OUT)/vmlinux-$(RECIPE)-$(KVER).manifest
 
 include mk/fetch.mk
 include mk/kernel.mk
+include mk/thirdparty.mk
 include mk/initramfs.mk
 include mk/booter.mk
 
@@ -97,6 +98,7 @@ $(MANIFEST): $(IMG)
 	  echo "modules:     $(if $(RECIPE_MODULES),$(RECIPE_MODULES),none)"; \
 	  echo "init:        $(RECIPE_INIT)"; \
 	  echo "fragment:    $(if $(RECIPE_FRAGMENT),$(RECIPE_FRAGMENT),none)"; \
+	  echo "libs:        $(if $(RECIPE_LIBS),$(RECIPE_LIBS),none)"; \
 	  echo "config:      sha256:$$(sha256sum $(KBUILD)/.config | cut -c1-16)"; \
 	  echo "initramfs:   sha256:$$(sha256sum $(INITRAMFS) | cut -c1-16)"; \
 	  echo "image:       sha256:$$(sha256sum $(IMG) | cut -c1-16)"; \

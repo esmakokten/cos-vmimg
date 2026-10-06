@@ -1,0 +1,8 @@
+# The TLS key errand: gates G1/G2 and the Phase 1 record-size sweep (w5_tls_errand).
+# Needs the Composite system composed from composition_scripts/vmm_tls_errand.toml
+# (tlskey_op at errand slot 1). Phase 2 adds the nginx overlay.
+description = "TLS key errand: G1/G2 gates and the BearSSL record-size sweep"
+init        = "run_tls_errand.sh"
+programs    = ["g1_selftest.c", "g2_bw.c", "tlsbench_raw.c", "census.c", "ipc_perf.c"]
+modules     = ["errandbuf.c"]
+libs        = ["bearssl"]

@@ -53,10 +53,12 @@ $(STAMPS)/overlay: $(STAMPS)/busybox-installed $(shell find $(TOP)/rootfs -type 
 	@chmod +x $(RFS)/init
 	@touch $@
 
-$(RFS)/programs/%: $(TOP)/programs/%.c $(STAMPS)/overlay
+# Programs see the headers in programs/ and, when the recipe names third-party libraries
+# (`libs = [...]`, see mk/thirdparty.mk), their include paths and static archives.
+$(RFS)/programs/%: $(TOP)/programs/%.c $(STAMPS)/overlay $(wildcard $(TOP)/programs/*.h) $(THIRDPARTY_DEPS)
 	@mkdir -p $(RFS)/programs
 	@echo "  [CC]    $* (static)"
-	@$(CC) -static -O2 -Wall -o $@ $< -lm
+	@$(CC) -static -O2 -Wall -I$(TOP)/programs $(THIRDPARTY_CFLAGS) -o $@ $< $(THIRDPARTY_LIBS) -lm
 
 # Modules are built against the very kernel the image will run.
 #
