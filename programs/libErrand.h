@@ -2,7 +2,7 @@
  * libErrand.h -- the guest side of a Composite errand: one inline vmcall.
  *
  * ABI (CLAUDE.md, verified on cr3_policy d4a7fd99):
- *   rax = (64 + slot + 1) << 16     the capability slot in the VM's captbl
+ *   rax = (64 + 4*slot + 1) << 16   the capability slot in the VM's captbl (sinv caps are 4 ids wide)
  *   rbx, rsi, rdi, rdx              the four word arguments, in that order
  *   r9 = return address, r8 = fault return address (an invalid capability returns there
  *                                   with rax = -EINVAL; reported as fault = 1)
@@ -23,13 +23,22 @@
  * (-mgeneral-regs-only) rejects XMM clobbers; there the caller brackets the call with
  * kernel_fpu_begin/end instead.
  *
+ * r11 is the server's RFLAGS. The fast path enters the server with sysretq, which loads
+ * RFLAGS from r11, and the kernel never sets r11 on that path (__userregs_set sets only
+ * rax, rcx/rip and rsp/rbp), so the server starts with whatever the guest left in r11. From
+ * ring 3 that is usually the process's own RFLAGS from its last syscall (harmless); from the
+ * guest kernel it was a pointer, whose bit 8 (TF) made the server's first instruction trap
+ * (#DB). 0x3202 is the RFLAGS native components run with (IF, IOPL 3). This is a guest-side
+ * workaround for a kernel fast-path defect (BUGS.md).
+ *
  * Works from ring 3 and ring 0 alike: vmcall exits from any CPL.
  */
 #ifndef LIBERRAND_H
 #define LIBERRAND_H
 
-#define ERRAND_CAP_BASE 64
-#define ERRAND_CAP(slot) (((unsigned long)(ERRAND_CAP_BASE + (slot) + 1)) << 16)
+#define ERRAND_CAP_BASE   64
+#define ERRAND_CAP_STRIDE 4 /* a sinv capability is 64 B = 4 capability ids */
+#define ERRAND_CAP(slot) (((unsigned long)(ERRAND_CAP_BASE + ERRAND_CAP_STRIDE * (slot) + 1)) << 16)
 
 #ifdef __KERNEL__
 #define ERRAND_XMM_CLOBBERS
@@ -49,6 +58,7 @@ errand_call_f(unsigned long cap, unsigned long a0, unsigned long a1, unsigned lo
 		"pushq %%rbp\n\t"
 		"movabs $1f, %%r8\n\t"
 		"movabs $2f, %%r9\n\t"
+		"movq $0x3202, %%r11\n\t" /* the server's RFLAGS: see below */
 		"vmcall\n\t"
 		".align 8\n\t"
 		"1:\n\t"

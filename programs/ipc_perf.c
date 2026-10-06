@@ -77,8 +77,9 @@ vm_ipc_call(unsigned long fn,
  */
 #define COS_CAPABILITY_OFFSET 16
 #define VM_IPC_SINV_CAP_BASE  64
+/* A sinv capability is 64 B = 4 ids: slot s is at id 64 + 4s (see libErrand.h). */
 #define VM_IPC_CAP_ENCODE(slot) \
-	(((unsigned long)(VM_IPC_SINV_CAP_BASE + (slot) + 1)) << COS_CAPABILITY_OFFSET)
+	(((unsigned long)(VM_IPC_SINV_CAP_BASE + 4 * (slot) + 1)) << COS_CAPABILITY_OFFSET)
 
 static inline unsigned long
 vm_ipc_call(unsigned long cap_no,
@@ -93,6 +94,7 @@ vm_ipc_call(unsigned long cap_no,
 						"pushq %%rbp\n\t"		\
 						 "movabs $1f, %%r8\n\t"	\
 						 "movabs $2f, %%r9\n\t"	\
+						 "movq $0x3202, %%r11\n\t" /* server RFLAGS (sysretq), see libErrand.h */ \
 	                     "vmcall\n\t"		\
 	                     ".align 8\n\t"		\
 	                     "1:\n\t"			\

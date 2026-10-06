@@ -70,7 +70,9 @@ $(RFS)/programs/%: $(TOP)/programs/%.c $(STAMPS)/overlay $(wildcard $(TOP)/progr
 # silently emits .ko files with every external symbol unresolved -- they build
 # fine and then fail to insmod. Phase two relinks the kernel around the real
 # initramfs and is incremental.
-$(STAMPS)/modules: $(STAMPS)/overlay $(KBUILD)/.scaffold
+# Rebuilt when a module source or a shared header changes: the stamp used to depend on
+# neither, so an edited module shipped stale.
+$(STAMPS)/modules: $(STAMPS)/overlay $(KBUILD)/.scaffold $(addprefix $(TOP)/programs/modules/,$(RECIPE_MODULES)) $(wildcard $(TOP)/programs/*.h)
 ifneq ($(RECIPE_MODULES),)
 	@mkdir -p $(RFS)/modules $(BUILD)/$(RECIPE)/modsrc
 	@cp $(addprefix $(TOP)/programs/modules/,$(RECIPE_MODULES)) $(BUILD)/$(RECIPE)/modsrc/
