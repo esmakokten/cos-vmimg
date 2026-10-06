@@ -99,6 +99,7 @@ $(MANIFEST): $(IMG)
 	  echo "init:        $(RECIPE_INIT)"; \
 	  echo "fragment:    $(if $(RECIPE_FRAGMENT),$(RECIPE_FRAGMENT),none)"; \
 	  echo "libs:        $(if $(RECIPE_LIBS),$(RECIPE_LIBS),none)"; \
+	  echo "overlay:     $(if $(RECIPE_OVERLAY),$(RECIPE_OVERLAY),none)"; \
 	  echo "config:      sha256:$$(sha256sum $(KBUILD)/.config | cut -c1-16)"; \
 	  echo "initramfs:   sha256:$$(sha256sum $(INITRAMFS) | cut -c1-16)"; \
 	  echo "image:       sha256:$$(sha256sum $(IMG) | cut -c1-16)"; \
@@ -139,13 +140,16 @@ iso: $(ISO)
 
 # --- installation into Composite ----------------------------------------------
 # DESTDIR is simple_vmm/vmm/guest/, where simple_vmm.c INCBINs the image.
+# INSTALL_NAMED=1 installs as vmlinux-<recipe>-<kver>.img beside the others, for a VMM that
+# names its image per composition (VM_GUEST_IMAGE); the default overwrites vmlinux.img.
 DESTDIR ?=
+INSTALL_AS := $(if $(INSTALL_NAMED),vmlinux-$(RECIPE)-$(KVER),vmlinux)
 install: $(IMG) $(MANIFEST)
 	@test -n "$(DESTDIR)" || { echo "usage: make install DESTDIR=<.../simple_vmm/vmm/guest>"; exit 1; }
 	@test -d "$(DESTDIR)" || { echo "ERROR: $(DESTDIR) is not a directory"; exit 1; }
-	@install -m 0644 $(IMG) $(DESTDIR)/vmlinux.img
-	@install -m 0644 $(MANIFEST) $(DESTDIR)/vmlinux.manifest
-	@echo "Installed $(RECIPE) image -> $(DESTDIR)/vmlinux.img"
+	@install -m 0644 $(IMG) $(DESTDIR)/$(INSTALL_AS).img
+	@install -m 0644 $(MANIFEST) $(DESTDIR)/$(INSTALL_AS).manifest
+	@echo "Installed $(RECIPE) image -> $(DESTDIR)/$(INSTALL_AS).img"
 
 clean:
 	rm -rf $(BUILD)/$(RECIPE) $(IMG) $(ISO) $(MANIFEST)

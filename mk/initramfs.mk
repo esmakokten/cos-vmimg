@@ -106,7 +106,18 @@ $(STAMPS)/payload: $(STAMPS)/overlay $(TOP)/programs/scripts/$(RECIPE_INIT)
 	@chmod +x $(RFS)/recipe-init
 	@touch $@
 
-INITRAMFS_DEPS := $(STAMPS)/overlay $(STAMPS)/payload $(RECIPE_PROG_BINS)
+# Third-party trees the recipe's libs stage (mk/thirdparty.mk, e.g. a static nginx under
+# /nginx), then the recipe's own overlay directory (programs/overlays/<name>/: configs,
+# certificates, /etc/passwd), copied last so tracked files win.
+$(STAMPS)/recipe-overlay: $(STAMPS)/overlay $(THIRDPARTY_ROOTFS_DEPS) $(if $(RECIPE_OVERLAY),$(shell find $(TOP)/programs/overlays/$(RECIPE_OVERLAY) -type f))
+	@for d in $(THIRDPARTY_ROOTFS); do echo "  [FS]    staged tree $$d"; cp -a $$d/. $(RFS)/; done
+ifneq ($(RECIPE_OVERLAY),)
+	@echo "  [FS]    overlay programs/overlays/$(RECIPE_OVERLAY)/"
+	@cp -a $(TOP)/programs/overlays/$(RECIPE_OVERLAY)/. $(RFS)/
+endif
+	@touch $@
+
+INITRAMFS_DEPS := $(STAMPS)/overlay $(STAMPS)/payload $(STAMPS)/recipe-overlay $(RECIPE_PROG_BINS)
 ifneq ($(RECIPE_MODULES),)
 INITRAMFS_DEPS += $(STAMPS)/modules
 endif

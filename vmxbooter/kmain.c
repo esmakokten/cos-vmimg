@@ -213,9 +213,22 @@ void acpi_init(struct acpi_table_rsdp *rsdp)
  * together with the memory it needs before it can read its own memory map,
  * inside the RAM we advertise in the e820 map below.
  */
-#define GUEST_LOAD_BASE  (0x900000UL)
+/*
+ * The image blob (this loader plus the embedded bzImage) sits at 1 MB, so GUEST_LOAD_BASE
+ * is the ceiling on the image size: with 9 MB it was 8 MB, and a 14 MB image (a static nginx
+ * in the initramfs) overwrote its own source while loading. 16 MB is the kernel's own
+ * pref_address. The RAM we advertise must end below GPA 0x3fff000: Composite maps its guest
+ * trampoline there (boot log: "EPT execute-only for guest trampoline (gpa 4000000, ept
+ * 3fff000)"), and a kernel that uses that page as RAM dies on an EPT violation the VMM does
+ * not handle. 62 MB (1 MB .. 63 MB) holds the load base plus the 28 MB init window of a
+ * 14 MB image; the image ceiling is now 15 MB. A second e820 entry continues RAM above the
+ * hole: 62 MB alone cannot hold the kernel plus the unpacked 14 MB initramfs.
+ */
+#define GUEST_LOAD_BASE  (0x1000000UL)
 #define GUEST_RAM_START  (0x100000UL)
-#define GUEST_RAM_SIZE   (60UL * 1024 * 1024)
+#define GUEST_RAM_SIZE   (62UL * 1024 * 1024)
+#define GUEST_RAM2_START (0x4100000UL)             /* 65 MB: past the trampoline hole */
+#define GUEST_RAM2_SIZE  (192UL * 1024 * 1024)     /* .. 257 MB, below the 310 MB backing */
 
 /*
  * The 64-bit entry point is at +0x200 from the start of the protected-mode
@@ -245,7 +258,7 @@ void kmain(void)
 	unsigned long init_size   = hdr->init_size;
 
 	/* The image is the last data section; we must not copy over ourselves. */
-	if (load_base < bzimage) while (1);
+	if (load_base < bzimage + bzimage_sz) while (1);
 
 	/* Sanity-check the header before trusting anything else in it. */
 	if (hdr->boot_flag != 0xAA55) while (1);
@@ -295,7 +308,7 @@ void kmain(void)
 	boot_params.hdr.cmd_line_ptr    = _pa(cmd_line_str);
 	boot_params.hdr.cmdline_size    = strlen(cmd_line_str);
 
-	boot_params.e820_entries = 3;
+	boot_params.e820_entries = 4;
 	boot_params.e820_table[0].addr = 0;
 	boot_params.e820_table[0].size = 0x9e000;
 	boot_params.e820_table[0].type = 1;
@@ -307,6 +320,12 @@ void kmain(void)
 	boot_params.e820_table[2].addr = GUEST_RAM_START;
 	boot_params.e820_table[2].size = GUEST_RAM_SIZE;
 	boot_params.e820_table[2].type = 1;
+
+	/* More RAM above the trampoline hole at 64 MB (see GUEST_RAM_SIZE), below the VMM's
+	 * 310 MB of backing and the errand buffer aliased right after it. */
+	boot_params.e820_table[3].addr = GUEST_RAM2_START;
+	boot_params.e820_table[3].size = GUEST_RAM2_SIZE;
+	boot_params.e820_table[3].type = 1;
 
 	asm volatile("mov %0, %%rsi; jmpq *%1;"
 		     :: "r"((unsigned long)_pa(&boot_params)),

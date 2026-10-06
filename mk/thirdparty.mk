@@ -4,9 +4,11 @@
 #
 # Phase 2 of w5_tls_errand adds nginx and OpenSSL here (the `overlay` recipe key).
 
-THIRDPARTY_DEPS   :=
-THIRDPARTY_CFLAGS :=
-THIRDPARTY_LIBS   :=
+THIRDPARTY_DEPS        :=
+THIRDPARTY_CFLAGS      :=
+THIRDPARTY_LIBS        :=
+THIRDPARTY_ROOTFS      :=
+THIRDPARTY_ROOTFS_DEPS :=
 
 # --- BearSSL 0.6: the in-guest arm of the TLS sweep (the same code the tlskey service runs)
 BEARSSL_VER     := 0.6
@@ -38,7 +40,76 @@ THIRDPARTY_CFLAGS += -I$(BEARSSL_SRC)/inc
 THIRDPARTY_LIBS   += $(BEARSSL_LIB)
 endif
 
-UNKNOWN_LIBS := $(filter-out bearssl,$(RECIPE_LIBS))
+
+# --- OpenSSL 3.0.17, static (no-shared no-dso no-module): tlsbench links it, nginx builds on it
+OPENSSL_VER     := 3.0.17
+OPENSSL_TARBALL := openssl-$(OPENSSL_VER).tar.gz
+OPENSSL_URL     := https://github.com/openssl/openssl/releases/download/openssl-$(OPENSSL_VER)/$(OPENSSL_TARBALL)
+# from $(OPENSSL_URL).sha256
+OPENSSL_SHA256  := dfdd77e4ea1b57ff3a6dbde6b0bdc3f31db5ac99e7fdd4eaf9e1fbb6ec2db8ce
+OPENSSL_SRC     := $(BUILD)/openssl-$(OPENSSL_VER)
+OPENSSL_PREFIX  := $(BUILD)/openssl-$(OPENSSL_VER)-install
+OPENSSL_LIB     := $(OPENSSL_PREFIX)/lib/libssl.a
+
+$(OPENSSL_SRC)/.extracted: | $(BUILD)
+	$(call fetch_verify,$(OPENSSL_TARBALL),$(OPENSSL_URL),$(OPENSSL_SHA256),)
+	@rm -rf $(OPENSSL_SRC)
+	@echo "  [TAR]   $(OPENSSL_TARBALL)"
+	@tar -xzf $(DL)/$(OPENSSL_TARBALL) -C $(BUILD)
+	@touch $@
+
+$(OPENSSL_LIB): $(OPENSSL_SRC)/.extracted
+	@echo "  [CC]    openssl $(OPENSSL_VER) (static)"
+	@cd $(OPENSSL_SRC) && ./Configure linux-x86_64 no-shared no-dso no-module no-tests \
+		--prefix=$(OPENSSL_PREFIX) --libdir=lib > configure.log 2>&1
+	@$(MAKE) -s -C $(OPENSSL_SRC) -j$(JOBS) > $(OPENSSL_SRC)/build.log 2>&1
+	@$(MAKE) -s -C $(OPENSSL_SRC) install_sw > $(OPENSSL_SRC)/install.log 2>&1
+
+ifneq ($(filter openssl,$(RECIPE_LIBS)),)
+THIRDPARTY_DEPS   += $(OPENSSL_LIB)
+THIRDPARTY_CFLAGS += -I$(OPENSSL_PREFIX)/include
+THIRDPARTY_LIBS   += -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
+endif
+
+# --- nginx 1.26.3, static, on the OpenSSL above; staged under /nginx (prefix) and copied
+# into the rootfs when the recipe lists it. nginx.org publishes PGP signatures, not sha256;
+# this value was taken at first fetch (2026-10-06) and pins the tarball from then on.
+NGINX_VER     := 1.26.3
+NGINX_TARBALL := nginx-$(NGINX_VER).tar.gz
+NGINX_URL     := https://nginx.org/download/$(NGINX_TARBALL)
+NGINX_SHA256  := 69ee2b237744036e61d24b836668aad3040dda461fe6f570f1787eab570c75aa
+NGINX_SRC     := $(BUILD)/nginx-$(NGINX_VER)
+NGINX_STAGE   := $(BUILD)/nginx-$(NGINX_VER)-stage
+NGINX_BIN     := $(NGINX_STAGE)/nginx/sbin/nginx
+# Phase 2 adds the errand provider object and the one-line main() patch here.
+NGINX_EXTRA_OBJS :=
+NGINX_PATCHES    :=
+
+$(NGINX_SRC)/.extracted: | $(BUILD)
+	$(call fetch_verify,$(NGINX_TARBALL),$(NGINX_URL),$(NGINX_SHA256),)
+	@rm -rf $(NGINX_SRC)
+	@echo "  [TAR]   $(NGINX_TARBALL)"
+	@tar -xzf $(DL)/$(NGINX_TARBALL) -C $(BUILD)
+	@for p in $(NGINX_PATCHES); do echo "  [PATCH] $$p"; patch -d $(NGINX_SRC) -p1 < $$p || exit 1; done
+	@touch $@
+
+$(NGINX_BIN): $(NGINX_SRC)/.extracted $(OPENSSL_LIB) $(NGINX_EXTRA_OBJS)
+	@echo "  [CC]    nginx $(NGINX_VER) (static, http_ssl)"
+	@cd $(NGINX_SRC) && ./configure --prefix=/nginx --with-http_ssl_module \
+		--without-http_rewrite_module --without-http_gzip_module \
+		--with-cc-opt="-O2 -I$(OPENSSL_PREFIX)/include" \
+		--with-ld-opt="-static -L$(OPENSSL_PREFIX)/lib $(NGINX_EXTRA_OBJS)" > configure.log 2>&1
+	@$(MAKE) -s -C $(NGINX_SRC) -j$(JOBS) > $(NGINX_SRC)/build.log 2>&1
+	@rm -rf $(NGINX_STAGE)
+	@$(MAKE) -s -C $(NGINX_SRC) install DESTDIR=$(NGINX_STAGE) > $(NGINX_SRC)/install.log 2>&1
+	@file $@ | grep -q 'statically linked' || { echo "ERROR: nginx is not static; the image has no dynamic loader."; exit 1; }
+
+ifneq ($(filter nginx,$(RECIPE_LIBS)),)
+THIRDPARTY_ROOTFS_DEPS += $(NGINX_BIN)
+THIRDPARTY_ROOTFS      += $(NGINX_STAGE)
+endif
+
+UNKNOWN_LIBS := $(filter-out bearssl openssl nginx,$(RECIPE_LIBS))
 ifneq ($(UNKNOWN_LIBS),)
 $(error recipe names unknown libs: $(UNKNOWN_LIBS))
 endif

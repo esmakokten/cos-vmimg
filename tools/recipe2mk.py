@@ -9,7 +9,7 @@ you end up with an image that boots to nothing.
 """
 import sys, tomllib, pathlib
 
-ALLOWED = {"description", "init", "programs", "modules", "fragment", "libs"}
+ALLOWED = {"description", "init", "programs", "modules", "fragment", "libs", "overlay"}
 
 def main() -> int:
     path = pathlib.Path(sys.argv[1])
@@ -29,6 +29,7 @@ def main() -> int:
         f"RECIPE_MODULES := {' '.join(recipe.get('modules', []))}",
         f"RECIPE_FRAGMENT := {recipe.get('fragment', '')}",
         f"RECIPE_LIBS := {' '.join(recipe.get('libs', []))}",
+        f"RECIPE_OVERLAY := {recipe.get('overlay', '')}",
     ]
     print("\n".join(out))
     return 0
