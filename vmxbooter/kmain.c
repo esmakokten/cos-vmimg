@@ -224,11 +224,17 @@ void acpi_init(struct acpi_table_rsdp *rsdp)
  * 14 MB image; the image ceiling is now 15 MB. A second e820 entry continues RAM above the
  * hole: 62 MB alone cannot hold the kernel plus the unpacked 14 MB initramfs.
  */
-#define GUEST_LOAD_BASE  (0x1000000UL)
 #define GUEST_RAM_START  (0x100000UL)
 #define GUEST_RAM_SIZE   (62UL * 1024 * 1024)
 #define GUEST_RAM2_START (0x4100000UL)             /* 65 MB: past the trampoline hole */
 #define GUEST_RAM2_SIZE  (192UL * 1024 * 1024)     /* .. 257 MB, below the 310 MB backing */
+/*
+ * The kernel is loaded into the second region, 2 MB aligned (the decompressor of a relocatable
+ * kernel runs in place at its load address). The image blob then has the whole first region to
+ * itself: the ceiling is ~62 MB instead of 15, and the init window (tens of MB for an image
+ * with nginx, OpenSSL and the test programs) has 190 MB to grow into.
+ */
+#define GUEST_LOAD_BASE  (0x4200000UL)
 
 /*
  * The 64-bit entry point is at +0x200 from the start of the protected-mode
@@ -263,8 +269,10 @@ void kmain(void)
 	/* Sanity-check the header before trusting anything else in it. */
 	if (hdr->boot_flag != 0xAA55) while (1);
 	if (hdr->header != 0x53726448 /* "HdrS" */) while (1);
-	/* The advertised init window has to fit in the RAM we are about to claim. */
-	if (GUEST_LOAD_BASE + init_size > GUEST_RAM_START + GUEST_RAM_SIZE) while (1);
+	/* The advertised init window has to fit in the RAM region the kernel is loaded into. */
+	if (GUEST_LOAD_BASE < GUEST_RAM2_START || GUEST_LOAD_BASE + init_size > GUEST_RAM2_START + GUEST_RAM2_SIZE) while (1);
+	/* ... and the image blob must not reach the trampoline hole at 64 MB. */
+	if ((unsigned long)_pa(bzimage + bzimage_sz) > GUEST_RAM_START + GUEST_RAM_SIZE) while (1);
 
 	/*
 	 * Zero the whole init window before loading.

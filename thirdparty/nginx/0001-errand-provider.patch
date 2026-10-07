@@ -1,0 +1,38 @@
+nginx 1.26.3: register the Composite errand provider when TLS_ERRAND is set in the environment.
+
+One binary serves both arms of the measurement: without TLS_ERRAND nothing changes; with it
+the built-in "errand" provider is registered and loaded (loading a provider by hand disables
+the automatic default, so "default" is loaded too) and preferred for every algorithm it
+offers, which is AES-128-GCM only: the '?' keeps SHA-256, HKDF, X25519 and ECDSA on the
+default provider. The provider object is linked in through --with-ld-opt.
+
+--- a/src/core/nginx.c
++++ b/src/core/nginx.c
+@@ -8,6 +8,10 @@
+ #include <ngx_config.h>
+ #include <ngx_core.h>
+ #include <nginx.h>
++#include <openssl/provider.h>
++#include <openssl/evp.h>
++
++extern OSSL_provider_init_fn OSSL_provider_init_errand;
+ 
+ 
+ static void ngx_show_version_info(void);
+@@ -205,6 +209,16 @@ main(int argc, char *const *argv)
+ 
+     ngx_debug_init();
+ 
++    if (getenv("TLS_ERRAND") != NULL) {
++        if (OSSL_PROVIDER_add_builtin(NULL, "errand", OSSL_provider_init_errand) != 1
++            || OSSL_PROVIDER_load(NULL, "errand") == NULL
++            || OSSL_PROVIDER_load(NULL, "default") == NULL
++            || EVP_set_default_properties(NULL, "?provider=errand") != 1)
++        {
++            return 1;
++        }
++    }
++
+     if (ngx_strerror_init() != NGX_OK) {
+         return 1;
+     }

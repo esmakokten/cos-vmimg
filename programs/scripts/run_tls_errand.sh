@@ -30,6 +30,32 @@ i=0; while [ $i -lt 50 ] && ! grep -q ":01BB" /proc/net/tcp; do sleep 0.1; i=$((
 /programs/tlsbench -n 200 -s 4096 -p /4k.bin -new
 /programs/census 5
 cat /nginx/logs/error.log
+/nginx/sbin/nginx -s quit; sleep 1
+
+echo "=== PROVIDER CHECK: the errand provider against the default provider (step 2.2)"
+/programs/provider_check
+/programs/census 6
+
+echo "=== PHASE2: nginx request table, provider off (in-guest) then on (errand)"
+# per arm and size: counters and census before and after, 10,000 keep-alive GETs over 10 connections
+for arm in off on; do
+	if [ $arm = on ]; then TLS_ERRAND=1 /nginx/sbin/nginx -c /nginx/conf/nginx.conf; else /nginx/sbin/nginx -c /nginx/conf/nginx.conf; fi \
+		&& echo "nginx started, provider $arm" || { echo "nginx FAILED to start (provider $arm)"; cat /nginx/logs/error.log; }
+	i=0; while [ $i -lt 50 ] && ! grep -q ":01BB" /proc/net/tcp; do sleep 0.1; i=$((i + 1)); done
+	for s in 1 4 16 64; do
+		echo "--- PHASE2 arm=$arm size=${s}k"
+		/programs/census 10
+		/programs/tlsbench -n 10000 -s $((s * 1024)) -p /${s}k.bin -c 10
+		/programs/census 11
+	done
+	echo "--- PHASE2 arm=$arm handshakes"
+	/programs/census 12
+	/programs/tlsbench -n 1000 -s 4096 -p /4k.bin -new
+	/programs/census 13
+	/nginx/sbin/nginx -s quit; sleep 1
+	cat /nginx/logs/error.log
+done
+echo "PHASE2 DONE"
 
 echo "=== IPC_PERF: the tree's null-service reference on slot 0 (its slot-1 run now hits tlskey_op with op 42 -> TLSKEY_EINVAL, a trivial op)"
 /programs/ipc_perf
