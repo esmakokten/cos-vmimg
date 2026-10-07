@@ -36,10 +36,14 @@ echo "=== PROVIDER CHECK: the errand provider against the default provider (step
 /programs/provider_check
 /programs/census 6
 
-echo "=== PHASE2: nginx request table, provider off (in-guest) then on (errand)"
+echo "=== PHASE2: nginx request table: provider off (stock OpenSSL), local (same provider, BearSSL in-process), on (errand)"
 # per arm and size: counters and census before and after, 10,000 keep-alive GETs over 10 connections
-for arm in off on; do
-	if [ $arm = on ]; then TLS_ERRAND=1 /nginx/sbin/nginx -c /nginx/conf/nginx.conf; else /nginx/sbin/nginx -c /nginx/conf/nginx.conf; fi \
+for arm in off local on; do
+	case $arm in
+	on)    TLS_ERRAND=1 /nginx/sbin/nginx -c /nginx/conf/nginx.conf ;;
+	local) TLS_ERRAND=local /nginx/sbin/nginx -c /nginx/conf/nginx.conf ;;
+	*)     /nginx/sbin/nginx -c /nginx/conf/nginx.conf ;;
+	esac \
 		&& echo "nginx started, provider $arm" || { echo "nginx FAILED to start (provider $arm)"; cat /nginx/logs/error.log; }
 	i=0; while [ $i -lt 50 ] && ! grep -q ":01BB" /proc/net/tcp; do sleep 0.1; i=$((i + 1)); done
 	for s in 1 4 16 64; do

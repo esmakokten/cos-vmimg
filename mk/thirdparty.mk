@@ -87,17 +87,17 @@ NGINX_BIN     := $(NGINX_STAGE)/nginx/sbin/nginx
 ERRAND_PROVIDER_SRC := $(TOP)/thirdparty/errand-provider/errand_provider.c
 ERRAND_PROVIDER_OBJ := $(BUILD)/errand_provider.o
 ERRAND_PROVIDER_LIB := $(BUILD)/liberrandprov.a
-$(ERRAND_PROVIDER_OBJ): $(ERRAND_PROVIDER_SRC) $(wildcard $(TOP)/programs/*.h) $(OPENSSL_LIB) | $(BUILD)
+$(ERRAND_PROVIDER_OBJ): $(ERRAND_PROVIDER_SRC) $(wildcard $(TOP)/programs/*.h) $(OPENSSL_LIB) $(BEARSSL_LIB) | $(BUILD)
 	@echo "  [CC]    errand_provider.o"
-	@$(CC) -O2 -Wall -I$(TOP)/programs -I$(OPENSSL_PREFIX)/include -c -o $@ $<
+	@$(CC) -O2 -Wall -I$(TOP)/programs -I$(OPENSSL_PREFIX)/include -I$(BEARSSL_SRC)/inc -c -o $@ $<
 # An archive, not a bare object: nginx's configure link-tests --with-ld-opt without libcrypto,
 # and a bare object's OpenSSL references would fail that test. A member is pulled only when
 # nginx.c references OSSL_provider_init_errand, and the libraries repeated after it resolve
 # the member's references (static link order).
 $(ERRAND_PROVIDER_LIB): $(ERRAND_PROVIDER_OBJ)
 	@rm -f $@ && ar rcs $@ $<
-NGINX_EXTRA_LDFLAGS := -L$(BUILD) -lerrandprov -lssl -lcrypto
-NGINX_EXTRA_DEPS    := $(ERRAND_PROVIDER_LIB)
+NGINX_EXTRA_LDFLAGS := -L$(BUILD) -lerrandprov $(BEARSSL_LIB) -lssl -lcrypto
+NGINX_EXTRA_DEPS    := $(ERRAND_PROVIDER_LIB) $(BEARSSL_LIB)
 NGINX_PATCHES       := $(TOP)/thirdparty/nginx/0001-errand-provider.patch
 
 $(NGINX_SRC)/.extracted: $(NGINX_PATCHES) | $(BUILD)

@@ -124,7 +124,7 @@ main(void)
 		t0 = rdtsc_(); for (int i = 0; i < N; i++) { iv[0] = (unsigned char)i; tls_seal(de, iv, aad, 5, p, 4096, c2, tag2); } t1 = rdtsc_();
 		printf("provider_check: 4 KB SEAL through EVP: errand %lu cycles, default %lu cycles (mean of %d)\n", (unsigned long)te, (unsigned long)((t1 - t0) / N), N);
 	}
-	printf("provider_check: errands issued by this process: %lu\n", errand_provider_records());
+	printf("provider_check: records through the provider in this process: %lu (mode %s)\n", errand_provider_records(), getenv("TLS_ERRAND") ? getenv("TLS_ERRAND") : "errand");
 	EVP_CIPHER_CTX_free(ee); EVP_CIPHER_CTX_free(eo); EVP_CIPHER_CTX_free(de); EVP_CIPHER_CTX_free(dop);
 	printf("PROVIDER CHECK: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
