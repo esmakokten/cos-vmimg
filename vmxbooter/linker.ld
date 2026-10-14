@@ -25,11 +25,11 @@ SECTIONS {
     .data : AT(phys + (data - code)) {
         data = .;
         *(.data)
-        . = ALIGN(4096);
-        _guest_start = .;
-        *(.guest_image)
-        _guest_end = .;
 
+        /* The loader's own state (boot_params, cmd line, stack) before the guest image, not
+         * after it: the kernel is not relocatable and decompresses to 16 MB (PHYSICAL_START),
+         * so anything behind an image that ends above 16 MB is overwritten before the kernel
+         * reads boot_params (a 15.9 MB image died in copy_bootdata). The image is last. */
         . = ALIGN(4096);
 	bss = .;
         *(.bss)
@@ -37,6 +37,11 @@ SECTIONS {
         . = ALIGN(4096);
         largebss = .;
         *(.largebss)
+
+        . = ALIGN(4096);
+        _guest_start = .;
+        *(.guest_image)
+        _guest_end = .;
         . = ALIGN(4096);
     }
     end = .;
