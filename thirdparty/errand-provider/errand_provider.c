@@ -35,18 +35,20 @@
 #include <openssl/params.h>
 #include <openssl/provider.h>
 #include <openssl/evp.h>
-#include <bearssl.h>
+#include <openssl/err.h>
 #include "libErrand.h"
 #include "tlskey_abi.h"
 
 /*
  * Three arms share this one provider. TLS_ERRAND unset: the provider is not registered and
  * nginx uses OpenSSL's own AES-GCM (the stock in-guest arm). TLS_ERRAND=1: every record is an
- * errand. TLS_ERRAND=local: the same code path -- same staging buffer, same copies, same
- * BearSSL cipher -- but BearSSL runs in this process instead of in the service, so
- * errand - local is the crossing alone and local - stock is the cipher-implementation gap.
+ * errand. TLS_ERRAND=local: the same code path -- same staging buffer, same copies, same cipher
+ * calls as the service's (OpenSSL 3.0.17's EVP AES-GCM, the default provider's implementation
+ * that the stock arm runs too) -- but in this process instead of in the service, so
+ * errand - local is the crossing alone and local - stock is the two copies per record.
  */
-static int local_mode;
+static int         local_mode;
+static EVP_CIPHER *local_cipher; /* local mode: "provider=default", never this provider itself */
 
 /* The shared buffer, mapped once at provider init. Layout used by this provider:
  *   [0, 64)          key scratch for SETKEY (zeroed after the errand)
@@ -86,8 +88,7 @@ ebuf_map(void)
 struct ectx {
 	int           enc;
 	unsigned long kid;     /* service key id, 0 = none (local mode: 1 once keyed) */
-	br_aes_x86ni_ctr_keys laes; /* local mode: the key schedule and GCM context in-process */
-	br_gcm_context        lgcm;
+	EVP_CIPHER_CTX *lctx;  /* local mode: the service's per-slot ctx, in-process */
 	unsigned char key[16];
 	size_t        keylen;
 	unsigned char iv[TLSKEY_NONCE_LEN];
@@ -109,8 +110,11 @@ key_install(struct ectx *c, const unsigned char *key, size_t keylen)
 
 	if (keylen != 16 || !ebuf) return 0;
 	if (local_mode) {
-		br_aes_x86ni_ctr_init(&c->laes, key, 16);
-		br_gcm_init(&c->lgcm, &c->laes.vtable, br_ghash_pclmul);
+		/* fetched here, not at provider init: nginx's "?provider=errand" preference must not
+		 * resolve this ctx to the errand provider itself */
+		if (!local_cipher && !(local_cipher = EVP_CIPHER_fetch(NULL, "AES-128-GCM", "provider=default"))) return 0;
+		if (!c->lctx && !(c->lctx = EVP_CIPHER_CTX_new())) return 0;
+		if (!EVP_CipherInit_ex(c->lctx, local_cipher, NULL, key, NULL, 1)) return 0;
 		c->kid = 1;
 		memcpy(c->key, key, 16);
 		c->keylen = 16;
@@ -148,6 +152,7 @@ ep_freectx(void *vctx)
 
 	if (!c) return;
 	if (c->kid && !local_mode) errand_call(TLSKEY_SLOT, TLSKEY_OPKEY(TLSKEY_OP_DELKEY, c->kid), 0, 0, 0);
+	EVP_CIPHER_CTX_free(c->lctx);
 	memset(c, 0, sizeof(*c));
 	free(c);
 }
@@ -160,7 +165,8 @@ ep_dupctx(void *vctx)
 	c = malloc(sizeof(*c));
 	if (!c) return NULL;
 	*c = *src;
-	c->kid = 0;
+	c->kid  = 0;
+	c->lctx = NULL;
 	if (src->kid && !key_install(c, src->key, src->keylen)) { free(c); return NULL; }
 
 	return c;
@@ -193,6 +199,28 @@ ep_init(void *vctx, const unsigned char *key, size_t keylen, const unsigned char
 static int ep_einit(void *c, const unsigned char *k, size_t kl, const unsigned char *iv, size_t il, const OSSL_PARAM p[]) { return ep_init(c, k, kl, iv, il, p, 1); }
 static int ep_dinit(void *c, const unsigned char *k, size_t kl, const unsigned char *iv, size_t il, const OSSL_PARAM p[]) { return ep_init(c, k, kl, iv, il, p, 0); }
 
+/*
+ * Local mode: the service's gcm_record (tlskey.c), the same EVP calls in the same order:
+ * CipherInit(nonce, direction), [OPEN] SET_TAG, one AAD update, one payload update in place,
+ * CipherFinal, [SEAL] GET_TAG. Returns 1, or 0 (for OPEN: the tag did not verify).
+ */
+static int
+local_record(EVP_CIPHER_CTX *ctx, int enc, const unsigned char *nonce, const unsigned char *aad,
+	     size_t aad_len, unsigned char *m, size_t len, unsigned char *tag)
+{
+	unsigned char fin[16];
+	int outl;
+
+	if (len > 0x7fffffff || !EVP_CipherInit_ex(ctx, NULL, NULL, NULL, nonce, enc)) return 0;
+	if (!enc && !EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, TLSKEY_TAG_LEN, tag)) return 0;
+	if (aad_len && !EVP_CipherUpdate(ctx, NULL, &outl, aad, (int)aad_len)) return 0;
+	if (len && (!EVP_CipherUpdate(ctx, m, &outl, m, (int)len) || (size_t)outl != len)) return 0;
+	if (!EVP_CipherFinal_ex(ctx, fin, &outl)) { ERR_clear_error(); return 0; }
+	if (enc && !EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, TLSKEY_TAG_LEN, tag)) return 0;
+
+	return 1;
+}
+
 /* One record through the buffer: header, payload, one errand, output back. */
 static int
 ep_record(struct ectx *c, unsigned char *out, size_t *outl, size_t outsize, const unsigned char *in, size_t inl)
@@ -210,18 +238,9 @@ ep_record(struct ectx *c, unsigned char *out, size_t *outl, size_t outsize, cons
 	memcpy(payload, in, inl);
 	errand_records++;
 	if (local_mode) { /* the service's op_seal/op_open, in-process */
-		br_gcm_reset(&c->lgcm, c->iv, TLSKEY_NONCE_LEN);
-		br_gcm_aad_inject(&c->lgcm, c->aad, c->aadlen);
-		br_gcm_flip(&c->lgcm);
-		if (c->enc) {
-			br_gcm_run(&c->lgcm, 1, payload, inl);
-			br_gcm_get_tag(&c->lgcm, c->tag);
-			c->tag_ready = 1;
-		} else {
-			if (!c->tag_set) return 0;
-			br_gcm_run(&c->lgcm, 0, payload, inl);
-			if (!br_gcm_check_tag(&c->lgcm, c->tag)) return 0;
-		}
+		if (!c->enc && !c->tag_set) return 0;
+		if (!local_record(c->lctx, c->enc, c->iv, c->aad, c->aadlen, payload, inl, c->tag)) return 0;
+		if (c->enc) c->tag_ready = 1;
 		memcpy(out, payload, inl);
 		c->done = 1;
 		*outl = inl;
@@ -438,6 +457,8 @@ static const OSSL_DISPATCH ep_provider_functions[] = {
 	{ 0, NULL }
 };
 
+extern unsigned int OPENSSL_ia32cap_P[4]; /* libcrypto's own dispatch, set at its init */
+
 /* The entry point registered with OSSL_PROVIDER_add_builtin(NULL, "errand", ...). */
 int
 OSSL_provider_init_errand(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *in, const OSSL_DISPATCH **out, void **provctx)
@@ -445,8 +466,9 @@ OSSL_provider_init_errand(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *i
 	const char *mode = getenv("TLS_ERRAND");
 
 	local_mode = mode && !strcmp(mode, "local");
-	if (local_mode && !br_aes_x86ni_ctr_get_vtable()) {
-		fprintf(stderr, "errand provider: no AES-NI for the local arm\n");
+	/* the local arm must run the stock arm's assembly path (AES-NI + PCLMUL) or nothing */
+	if (local_mode && !((OPENSSL_ia32cap_P[1] >> (57 - 32)) & 1 && (OPENSSL_ia32cap_P[1] >> (33 - 32)) & 1)) {
+		fprintf(stderr, "errand provider: no AES-NI/PCLMUL for the local arm\n");
 		return 0;
 	}
 	if (!ebuf_map()) {
@@ -460,7 +482,7 @@ OSSL_provider_init_errand(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *i
 }
 
 /* For the client programs: how many SEAL/OPEN records this process has processed (errands, or
- * local BearSSL calls in local mode). */
+ * local EVP calls in local mode). */
 unsigned long
 errand_provider_records(void)
 {

@@ -3,8 +3,9 @@
  *
  * Two arms, same operation: AES-128-GCM over one TLS-record-sized payload with a 13-byte AAD
  * (the TLS 1.2 record header) and a 12-byte nonce that counts up per record.
- *   in-guest: BearSSL's AES-NI/PCLMUL code linked into this program, in place on a local
- *             buffer (the baseline: same code, no boundary).
+ *   in-guest: OpenSSL 3.0.17's EVP AES-GCM linked into this program -- the library, the
+ *             implementation and the per-record call sequence the service runs (tlskey.c's
+ *             gcm_record) -- in place on a local buffer (the baseline: same code, no boundary).
  *   errand:   the record written into the shared buffer at off_in = 0 as
  *             [nonce][aad_len][aad][payload], then one SEAL (or OPEN) errand with
  *             off_out = the payload's own offset, so the service transforms in place.
@@ -25,7 +26,9 @@
 #include <unistd.h>
 #include <sched.h>
 #include <sys/mman.h>
-#include <bearssl.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
+#include <openssl/crypto.h>
 #include "libErrand.h"
 #include "tlskey_abi.h"
 
@@ -47,10 +50,10 @@ percentiles(uint64_t *s, int n)
 	return p;
 }
 
-/* in-guest arm */
-static br_aes_x86ni_ctr_keys g_aes;
-static br_gcm_context        g_gcm;
-static unsigned char         g_key[16];
+/* in-guest arm: one ctx keyed once, as one service key slot */
+static EVP_CIPHER_CTX *g_ctx;
+static unsigned char   g_key[16];
+extern unsigned int    OPENSSL_ia32cap_P[4]; /* libcrypto's dispatch */
 
 static void
 nonce_of(unsigned char *nonce, uint64_t seq)
@@ -59,24 +62,34 @@ nonce_of(unsigned char *nonce, uint64_t seq)
 	for (int i = 0; i < 8; i++) nonce[4 + i] = (unsigned char)(seq >> (56 - 8 * i));
 }
 
+/* The service's gcm_record: CipherInit(nonce, direction), [OPEN] SET_TAG, AAD, payload in place,
+ * CipherFinal, [SEAL] GET_TAG. Returns 1, or 0 (OPEN: tag mismatch). */
+static int
+gcm_record(int enc, const unsigned char *nonce, const unsigned char *aad, unsigned char *m, size_t len, unsigned char *tag)
+{
+	unsigned char fin[16];
+	int outl;
+
+	if (!EVP_CipherInit_ex(g_ctx, NULL, NULL, NULL, nonce, enc)) return 0;
+	if (!enc && !EVP_CIPHER_CTX_ctrl(g_ctx, EVP_CTRL_AEAD_SET_TAG, 16, tag)) return 0;
+	if (!EVP_CipherUpdate(g_ctx, NULL, &outl, aad, AAD_LEN)) return 0;
+	if (len && (!EVP_CipherUpdate(g_ctx, m, &outl, m, (int)len) || (size_t)outl != len)) return 0;
+	if (!EVP_CipherFinal_ex(g_ctx, fin, &outl)) { ERR_clear_error(); return 0; }
+	if (enc && !EVP_CIPHER_CTX_ctrl(g_ctx, EVP_CTRL_AEAD_GET_TAG, 16, tag)) return 0;
+
+	return 1;
+}
+
 static void
 inguest_seal(unsigned char *payload, size_t len, const unsigned char *nonce, const unsigned char *aad)
 {
-	br_gcm_reset(&g_gcm, nonce, 12);
-	br_gcm_aad_inject(&g_gcm, aad, AAD_LEN);
-	br_gcm_flip(&g_gcm);
-	br_gcm_run(&g_gcm, 1, payload, len);
-	br_gcm_get_tag(&g_gcm, payload + len);
+	gcm_record(1, nonce, aad, payload, len, payload + len);
 }
 
 static int
 inguest_open(unsigned char *payload, size_t len, const unsigned char *nonce, const unsigned char *aad)
 {
-	br_gcm_reset(&g_gcm, nonce, 12);
-	br_gcm_aad_inject(&g_gcm, aad, AAD_LEN);
-	br_gcm_flip(&g_gcm);
-	br_gcm_run(&g_gcm, 0, payload, len);
-	return br_gcm_check_tag(&g_gcm, payload + len) ? 0 : -1;
+	return gcm_record(0, nonce, aad, payload, len, payload + len) ? 0 : -1;
 }
 
 /* errand arm: the record sits at map + 0, payload at map + HDR + AAD_LEN */
@@ -171,7 +184,6 @@ main(void)
 	CPU_ZERO(&set); CPU_SET(0, &set); sched_setaffinity(0, sizeof(set), &set);
 	mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	if (!br_aes_x86ni_ctr_get_vtable()) { printf("sweep: no AES-NI in the guest\n"); return 1; }
 	map_len = errand_call(TLSKEY_SLOT, TLSKEY_OP_INFO_LEN, 0, 0, 0);
 	fd = open("/dev/errandbuf", O_RDWR);
 	if (fd < 0 || (long)map_len <= 0) { perror("sweep: /dev/errandbuf"); return 1; }
@@ -180,8 +192,13 @@ main(void)
 
 	/* the session key, derived "inside nginx" in record mode: here a fixed value */
 	for (int i = 0; i < 16; i++) g_key[i] = (unsigned char)(0xC0 + i);
-	br_aes_x86ni_ctr_init(&g_aes, g_key, 16);
-	br_gcm_init(&g_gcm, &g_aes.vtable, br_ghash_pclmul);
+	if (!(g_ctx = EVP_CIPHER_CTX_new()) || !EVP_CipherInit_ex(g_ctx, EVP_aes_128_gcm(), NULL, g_key, NULL, 1)) {
+		printf("sweep: in-guest key init failed\n"); return 1;
+	}
+	/* the in-guest arm must take the assembly path the service takes (its cos_init line) */
+	printf("sweep: in-guest %s: AES-NI %u PCLMUL %u AVX %u MOVBE %u\n", OpenSSL_version(OPENSSL_VERSION),
+	       (OPENSSL_ia32cap_P[1] >> 25) & 1, (OPENSSL_ia32cap_P[1] >> 1) & 1, (OPENSSL_ia32cap_P[1] >> 28) & 1, (OPENSSL_ia32cap_P[1] >> 22) & 1);
+	if (!((OPENSSL_ia32cap_P[1] >> 25) & 1) || !((OPENSSL_ia32cap_P[1] >> 1) & 1)) { printf("sweep: no AES-NI/PCLMUL in the guest\n"); return 1; }
 	memcpy(map + 1024 * 1024, g_key, 16);
 	kid = errand_call(TLSKEY_SLOT, TLSKEY_OP_SETKEY, 1024 * 1024, 16, 0);
 	memset(map + 1024 * 1024, 0, 16);

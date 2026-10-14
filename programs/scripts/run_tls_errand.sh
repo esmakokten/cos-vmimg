@@ -34,9 +34,11 @@ cat /nginx/logs/error.log
 
 echo "=== PROVIDER CHECK: the errand provider against the default provider (step 2.2)"
 /programs/provider_check
+echo "--- PROVIDER CHECK in local mode (the same provider, OpenSSL EVP in-process)"
+TLS_ERRAND=local /programs/provider_check
 /programs/census 6
 
-echo "=== PHASE2: nginx request table: provider off (stock OpenSSL), local (same provider, BearSSL in-process), on (errand)"
+echo "=== PHASE2: nginx request table: provider off (stock OpenSSL), local (same provider, OpenSSL EVP in-process), on (errand)"
 # per arm and size: counters and census before and after, 10,000 keep-alive GETs over 10 connections
 for arm in off local on; do
 	case $arm in
