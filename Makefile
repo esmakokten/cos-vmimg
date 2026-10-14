@@ -4,6 +4,7 @@
 #   make run   RECIPE=shell     boot that image under QEMU
 #   make list                   show available recipes
 #   make install DESTDIR=<dir>  install the image where simple_vmm expects it
+#                [KEYDEST=<dir>] and, for a recipe with the tlskey-sign lib, the service's key header
 #
 # See README.md for the pipeline and for how this differs from a normal distro.
 
@@ -150,6 +151,11 @@ install: $(IMG) $(MANIFEST)
 	@install -m 0644 $(IMG) $(DESTDIR)/$(INSTALL_AS).img
 	@install -m 0644 $(MANIFEST) $(DESTDIR)/$(INSTALL_AS).manifest
 	@echo "Installed $(RECIPE) image -> $(DESTDIR)/$(INSTALL_AS).img"
+ifneq ($(filter tlskey-sign,$(RECIPE_LIBS)),)
+	@if [ -n "$(KEYDEST)" ]; then install -m 0600 $(SIGNKEY_HDR) $(KEYDEST)/tlskey_sign_key.h \
+		&& echo "Installed the tlskey signing key header -> $(KEYDEST)/tlskey_sign_key.h"; \
+	else echo "NOTE: KEYDEST not given; the tlskey service needs $(SIGNKEY_HDR)"; fi
+endif
 
 clean:
 	rm -rf $(BUILD)/$(RECIPE) $(IMG) $(ISO) $(MANIFEST)

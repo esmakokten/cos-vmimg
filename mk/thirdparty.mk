@@ -132,7 +132,25 @@ THIRDPARTY_ROOTFS_DEPS += $(NGINX_BIN)
 THIRDPARTY_ROOTFS      += $(NGINX_STAGE)
 endif
 
-UNKNOWN_LIBS := $(filter-out bearssl openssl nginx errand-provider,$(RECIPE_LIBS))
+# --- The tlskey service's signing key (w7 Phase 3, cut 1), generated once per build tree by the
+# build host's openssl (thirdparty/tlskey-sign/genkeys.sh) and kept. Only the certificate, the
+# placeholder key and nginx-sign.conf are staged into the rootfs; the private key leaves build/
+# only as the C header `make install KEYDEST=<composite>/.../implementation/tlskey/openssl` copies
+# into the service.
+SIGNKEY_DIR    := $(BUILD)/tlskey-sign
+SIGNKEY_HDR    := $(SIGNKEY_DIR)/tlskey_sign_key.h
+SIGNKEY_SCRIPT := $(TOP)/thirdparty/tlskey-sign/genkeys.sh
+SIGNKEY_CONF   := $(TOP)/thirdparty/tlskey-sign/nginx-sign.conf
+$(SIGNKEY_HDR): $(SIGNKEY_SCRIPT) $(SIGNKEY_CONF) | $(BUILD)
+	@echo "  [KEY]   tlskey signing key, certificate, placeholder ($(SIGNKEY_DIR))"
+	@$(SIGNKEY_SCRIPT) $(SIGNKEY_DIR) $(SIGNKEY_CONF)
+
+ifneq ($(filter tlskey-sign,$(RECIPE_LIBS)),)
+THIRDPARTY_ROOTFS_DEPS += $(SIGNKEY_HDR)
+THIRDPARTY_ROOTFS      += $(SIGNKEY_DIR)/rootfs
+endif
+
+UNKNOWN_LIBS := $(filter-out bearssl openssl nginx errand-provider tlskey-sign,$(RECIPE_LIBS))
 ifneq ($(UNKNOWN_LIBS),)
 $(error recipe names unknown libs: $(UNKNOWN_LIBS))
 endif

@@ -22,10 +22,19 @@
  * it a preference, so every other algorithm (SHA-256, HKDF, X25519, ECDSA) still comes from the
  * default provider. In record mode the session key is derived by libssl inside the guest and
  * handed to the service (DECISIONS.md Q2); the ctx keeps a copy only for dupctx.
+ *
+ * Phase 3 of w7 (cut 1), TLS_ERRAND=sign or sign+records: the server's ECDSA P-256 key exists only
+ * in the service. nginx loads a placeholder key file (the certificate's public point, scalar 1);
+ * this provider adds an EC keymgmt, which imports only the public point (and refuses a point that
+ * is not the service's), and an ECDSA signature, so that libssl's CertificateVerify
+ * (EVP_DigestSignInit_ex + EVP_DigestSign under "?provider=errand") lands here: the transcript is
+ * hashed in the guest (public data), and the 32-byte digest goes to the service in one SIGN errand,
+ * which returns the DER signature. Verification is not offered (the default provider keeps it).
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
@@ -48,18 +57,26 @@
  * errand - local is the crossing alone and local - stock is the two copies per record.
  */
 static int         local_mode;
+static int         cipher_mode; /* AES-128-GCM offered: TLS_ERRAND=1, local, sign+records */
+static int         sign_mode;   /* EC keymgmt + ECDSA offered: TLS_ERRAND=sign, sign+records */
+static int         sign_check;  /* diagnostic, TLS_ERRAND_CHECK=1: verify every SIGN in the guest (never in a measured arm) */
 static EVP_CIPHER *local_cipher; /* local mode: "provider=default", never this provider itself */
 
 /* The shared buffer, mapped once at provider init. Layout used by this provider:
  *   [0, 64)          key scratch for SETKEY (zeroed after the errand)
+ *   [1024, 1056)     SIGN: the digest
+ *   [1088, 1160)     SIGN: the DER signature; PUBKEY: the public point
  *   [4096, 4096+72K) one record: [nonce 12][aad_len 2][aad][payload (+ tag)]            */
 #define EB_KEY_OFF     0UL
+#define EB_SIGN_IN     1024UL
+#define EB_SIGN_OUT    1088UL
 #define EB_REC_OFF     4096UL
 #define EB_MAX_PAYLOAD (64UL * 1024)
 
 static unsigned char *ebuf;
 static unsigned long  ebuf_len;
 static unsigned long  errand_records; /* SEAL + OPEN errands issued by this process */
+static unsigned long  errand_signs;   /* SIGN errands issued by this process */
 
 static int
 ebuf_map(void)
@@ -417,12 +434,317 @@ static const OSSL_ALGORITHM ep_ciphers[] = {
 	{ NULL, NULL, NULL, NULL }
 };
 
+/* --- Phase 3: the EC keymgmt (public point only) and the ECDSA signature (one SIGN errand) --- */
+
+static unsigned char svc_pub[TLSKEY_PUB_LEN]; /* the service's public point, read once (PUBKEY) */
+static int           svc_pub_ok;
+
+static int
+svc_pubkey(void)
+{
+	if (svc_pub_ok) return 1;
+	if ((long)errand_call(TLSKEY_SLOT, TLSKEY_OP_PUBKEY, EB_SIGN_OUT, 0, 0) != TLSKEY_PUB_LEN) return 0;
+	memcpy(svc_pub, ebuf + EB_SIGN_OUT, TLSKEY_PUB_LEN);
+	svc_pub_ok = 1;
+
+	return 1;
+}
+
+struct ekey {
+	int           has_pub;
+	unsigned char pub[TLSKEY_PUB_LEN];
+};
+
+static void *ek_new(void *provctx) { return calloc(1, sizeof(struct ekey)); }
+static void  ek_free(void *k) { free(k); }
+
+static int
+ek_has(const void *vk, int selection)
+{
+	const struct ekey *k = vk;
+
+	/* the private half is the service's: present whenever the public point is (ek_import checked it) */
+	if (!k) return 0;
+	if (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) return k->has_pub;
+
+	return 1; /* the domain parameters are P-256, always */
+}
+
+/*
+ * Only the public point is taken, and only if it is the service's: a placeholder for any other key
+ * would sign with a key whose certificate it is not. The group must be P-256. Any private scalar
+ * in the params (the placeholder's 1) is ignored.
+ */
+static int
+ek_import(void *vk, int selection, const OSSL_PARAM params[])
+{
+	struct ekey *k = vk;
+	const OSSL_PARAM *p;
+	const char *g = NULL;
+	const void *pub = NULL;
+	size_t publen = 0;
+
+	if (!k || !(selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY)) return 0;
+	if (!(p = OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_GROUP_NAME)) || !OSSL_PARAM_get_utf8_string_ptr(p, &g)
+	    || (strcasecmp(g, "prime256v1") && strcasecmp(g, "P-256")))
+		return 0;
+	if (!(p = OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_PUB_KEY)) || !OSSL_PARAM_get_octet_string_ptr(p, &pub, &publen)
+	    || publen != TLSKEY_PUB_LEN)
+		return 0;
+	if (!svc_pubkey() || memcmp(pub, svc_pub, TLSKEY_PUB_LEN)) {
+		fprintf(stderr, "errand provider: the key's public point is not the tlskey service's\n");
+		return 0;
+	}
+	memcpy(k->pub, pub, TLSKEY_PUB_LEN);
+	k->has_pub = 1;
+
+	return 1;
+}
+
+static const OSSL_PARAM ek_import_types_tbl[] = {
+	OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, NULL, 0),
+	OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY, NULL, 0),
+	OSSL_PARAM_BN(OSSL_PKEY_PARAM_PRIV_KEY, NULL, 0),
+	OSSL_PARAM_END
+};
+static const OSSL_PARAM *ek_import_types(int selection) { return ek_import_types_tbl; }
+
+static int
+ek_get_params(void *vk, OSSL_PARAM params[])
+{
+	OSSL_PARAM *p;
+
+	if ((p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_BITS)) && !OSSL_PARAM_set_int(p, 256)) return 0;
+	if ((p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_SECURITY_BITS)) && !OSSL_PARAM_set_int(p, 128)) return 0;
+	if ((p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_MAX_SIZE)) && !OSSL_PARAM_set_int(p, TLSKEY_SIG_MAX)) return 0;
+	if ((p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_DEFAULT_DIGEST)) && !OSSL_PARAM_set_utf8_string(p, "SHA256")) return 0;
+	if ((p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_GROUP_NAME)) && !OSSL_PARAM_set_utf8_string(p, "prime256v1")) return 0;
+
+	return 1;
+}
+
+static const OSSL_PARAM ek_gettable_tbl[] = {
+	OSSL_PARAM_int(OSSL_PKEY_PARAM_BITS, NULL),
+	OSSL_PARAM_int(OSSL_PKEY_PARAM_SECURITY_BITS, NULL),
+	OSSL_PARAM_int(OSSL_PKEY_PARAM_MAX_SIZE, NULL),
+	OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_DEFAULT_DIGEST, NULL, 0),
+	OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, NULL, 0),
+	OSSL_PARAM_END
+};
+static const OSSL_PARAM *ek_gettable(void *provctx) { return ek_gettable_tbl; }
+
+/* the signature algorithm EVP looks up for this key type (the default EC keymgmt says the same) */
+static const char *ek_query_op(int operation_id) { return operation_id == OSSL_OP_SIGNATURE ? "ECDSA" : NULL; }
+
+static const OSSL_DISPATCH ep_ec_keymgmt_functions[] = {
+	{ OSSL_FUNC_KEYMGMT_NEW, (void (*)(void))ek_new },
+	{ OSSL_FUNC_KEYMGMT_FREE, (void (*)(void))ek_free },
+	{ OSSL_FUNC_KEYMGMT_HAS, (void (*)(void))ek_has },
+	{ OSSL_FUNC_KEYMGMT_IMPORT, (void (*)(void))ek_import },
+	{ OSSL_FUNC_KEYMGMT_IMPORT_TYPES, (void (*)(void))ek_import_types },
+	{ OSSL_FUNC_KEYMGMT_GET_PARAMS, (void (*)(void))ek_get_params },
+	{ OSSL_FUNC_KEYMGMT_GETTABLE_PARAMS, (void (*)(void))ek_gettable },
+	{ OSSL_FUNC_KEYMGMT_QUERY_OPERATION_NAME, (void (*)(void))ek_query_op },
+	{ 0, NULL }
+};
+
+static const OSSL_ALGORITHM ep_keymgmts[] = {
+	{ "EC:id-ecPublicKey:1.2.840.10045.2.1", "provider=errand", ep_ec_keymgmt_functions,
+	  "P-256 public point; the private key is the tlskey service's" },
+	{ NULL, NULL, NULL, NULL }
+};
+
+/* The ECDSA signature: SHA-256 in the guest (the "provider=default" digest, never this
+ * provider), then one SIGN errand over the 32-byte digest. */
+struct esig {
+	struct ekey *key;
+	EVP_MD_CTX  *mdctx; /* digest-sign only */
+};
+static EVP_MD *sign_md;
+
+static void *es_new(void *provctx, const char *propq) { return calloc(1, sizeof(struct esig)); }
+
+static void
+es_free(void *vs)
+{
+	struct esig *s = vs;
+
+	if (!s) return;
+	EVP_MD_CTX_free(s->mdctx);
+	free(s);
+}
+
+/* EVP_DigestSignFinal signs on a duplicate (so that the ctx can go on hashing) */
+static void *
+es_dup(void *vs)
+{
+	struct esig *src = vs, *s = calloc(1, sizeof(*s));
+
+	if (!s) return NULL;
+	s->key = src->key;
+	if (src->mdctx && (!(s->mdctx = EVP_MD_CTX_new()) || !EVP_MD_CTX_copy_ex(s->mdctx, src->mdctx))) {
+		es_free(s);
+		return NULL;
+	}
+
+	return s;
+}
+
+static int
+es_sign_init(void *vs, void *vk, const OSSL_PARAM params[])
+{
+	struct esig *s = vs;
+	struct ekey *k = vk;
+
+	if (!k || !k->has_pub) return 0;
+	s->key = k;
+
+	return 1;
+}
+
+/*
+ * Diagnostic (TLS_ERRAND_CHECK=1): does a SIGN's signature verify, in the guest, under the service's
+ * public point and over the digest this provider sent? Prints the failing digest and signature,
+ * then signs the same digest once more and says whether that one verifies. 1 = verifies.
+ */
+static unsigned long sign_checked, sign_bad;
+static int
+sign_verify(const unsigned char *dg, const unsigned char *sig, size_t siglen)
+{
+	static EVP_PKEY_CTX *vc;
+	int r;
+
+	if (!vc) {
+		OSSL_PARAM p[] = { OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, "prime256v1", 0),
+				   OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY, svc_pub, TLSKEY_PUB_LEN), OSSL_PARAM_END };
+		EVP_PKEY_CTX *fc = EVP_PKEY_CTX_new_from_name(NULL, "EC", "provider=default");
+		EVP_PKEY *pk = NULL;
+
+		if (!fc || EVP_PKEY_fromdata_init(fc) <= 0 || EVP_PKEY_fromdata(fc, &pk, EVP_PKEY_PUBLIC_KEY, p) <= 0) return -1;
+		EVP_PKEY_CTX_free(fc);
+		if (!(vc = EVP_PKEY_CTX_new_from_pkey(NULL, pk, "provider=default")) || EVP_PKEY_verify_init(vc) <= 0) return -1;
+	}
+	r = EVP_PKEY_verify(vc, sig, siglen, dg, TLSKEY_DIGEST_LEN);
+	ERR_clear_error();
+
+	return r == 1;
+}
+
+static void
+hexdump(const char *tag, const unsigned char *p, size_t n)
+{
+	fprintf(stderr, "%s", tag);
+	for (size_t i = 0; i < n; i++) fprintf(stderr, "%02x", p[i]);
+	fprintf(stderr, "\n");
+}
+
+/* One SIGN errand over a 32-byte digest; the DER signature into sig. */
+static int
+sign_errand(const unsigned char *dg, unsigned char *sig, size_t *siglen, size_t sigsize)
+{
+	long r;
+
+	memcpy(ebuf + EB_SIGN_IN, dg, TLSKEY_DIGEST_LEN);
+	r = (long)errand_call(TLSKEY_SLOT, TLSKEY_OP_SIGN, EB_SIGN_IN, TLSKEY_DIGEST_LEN, EB_SIGN_OUT);
+	errand_signs++;
+	if (r <= 0 || r > TLSKEY_SIG_MAX || (size_t)r > sigsize) return 0;
+	memcpy(sig, ebuf + EB_SIGN_OUT, (size_t)r);
+	*siglen = (size_t)r;
+	if (sign_check) {
+		sign_checked++;
+		if (sign_verify(dg, sig, (size_t)r) != 1) {
+			long r2;
+
+			sign_bad++;
+			fprintf(stderr, "errand provider: CHECK: SIGN %lu of %lu does not verify (%lu bad so far)\n", sign_checked, errand_signs, sign_bad);
+			hexdump("errand provider: CHECK: digest ", dg, TLSKEY_DIGEST_LEN);
+			hexdump("errand provider: CHECK: in-buffer digest after ", ebuf + EB_SIGN_IN, TLSKEY_DIGEST_LEN);
+			hexdump("errand provider: CHECK: signature ", sig, (size_t)r);
+			memcpy(ebuf + EB_SIGN_IN, dg, TLSKEY_DIGEST_LEN);
+			r2 = (long)errand_call(TLSKEY_SLOT, TLSKEY_OP_SIGN, EB_SIGN_IN, TLSKEY_DIGEST_LEN, EB_SIGN_OUT);
+			fprintf(stderr, "errand provider: CHECK: the same digest signed again: %s\n",
+				r2 > 0 && r2 <= TLSKEY_SIG_MAX && sign_verify(dg, ebuf + EB_SIGN_OUT, (size_t)r2) == 1 ? "verifies" : "does NOT verify");
+		} else if (sign_checked % 1000 == 0) {
+			fprintf(stderr, "errand provider: CHECK: %lu SIGNs checked, %lu bad\n", sign_checked, sign_bad);
+		}
+	}
+
+	return 1;
+}
+
+static int
+es_sign(void *vs, unsigned char *sig, size_t *siglen, size_t sigsize, const unsigned char *tbs, size_t tbslen)
+{
+	struct esig *s = vs;
+
+	if (!sig) { *siglen = TLSKEY_SIG_MAX; return 1; }
+	if (!s->key || tbslen != TLSKEY_DIGEST_LEN) return 0;
+
+	return sign_errand(tbs, sig, siglen, sigsize);
+}
+
+static int
+es_digest_sign_init(void *vs, const char *mdname, void *vk, const OSSL_PARAM params[])
+{
+	struct esig *s = vs;
+
+	if (mdname && strcasecmp(mdname, "SHA256") && strcasecmp(mdname, "SHA2-256")) return 0; /* ecdsa_secp256r1_sha256 only */
+	if (!es_sign_init(vs, vk, params)) return 0;
+	if (!sign_md && !(sign_md = EVP_MD_fetch(NULL, "SHA2-256", "provider=default"))) return 0;
+	if (!s->mdctx && !(s->mdctx = EVP_MD_CTX_new())) return 0;
+
+	return EVP_DigestInit_ex(s->mdctx, sign_md, NULL);
+}
+
+static int
+es_digest_sign_update(void *vs, const unsigned char *data, size_t len)
+{
+	struct esig *s = vs;
+
+	return s->mdctx && EVP_DigestUpdate(s->mdctx, data, len);
+}
+
+static int
+es_digest_sign_final(void *vs, unsigned char *sig, size_t *siglen, size_t sigsize)
+{
+	struct esig *s = vs;
+	unsigned char dg[EVP_MAX_MD_SIZE];
+	unsigned int dglen = 0;
+
+	if (!sig) { *siglen = TLSKEY_SIG_MAX; return 1; }
+	if (!s->key || !s->mdctx || !EVP_DigestFinal_ex(s->mdctx, dg, &dglen) || dglen != TLSKEY_DIGEST_LEN) return 0;
+
+	return sign_errand(dg, sig, siglen, sigsize);
+}
+
+static const OSSL_DISPATCH ep_ecdsa_functions[] = {
+	{ OSSL_FUNC_SIGNATURE_NEWCTX, (void (*)(void))es_new },
+	{ OSSL_FUNC_SIGNATURE_FREECTX, (void (*)(void))es_free },
+	{ OSSL_FUNC_SIGNATURE_DUPCTX, (void (*)(void))es_dup },
+	{ OSSL_FUNC_SIGNATURE_SIGN_INIT, (void (*)(void))es_sign_init },
+	{ OSSL_FUNC_SIGNATURE_SIGN, (void (*)(void))es_sign },
+	{ OSSL_FUNC_SIGNATURE_DIGEST_SIGN_INIT, (void (*)(void))es_digest_sign_init },
+	{ OSSL_FUNC_SIGNATURE_DIGEST_SIGN_UPDATE, (void (*)(void))es_digest_sign_update },
+	{ OSSL_FUNC_SIGNATURE_DIGEST_SIGN_FINAL, (void (*)(void))es_digest_sign_final },
+	{ 0, NULL }
+};
+
+static const OSSL_ALGORITHM ep_signatures[] = {
+	{ "ECDSA", "provider=errand", ep_ecdsa_functions, "ECDSA P-256 through the Composite tlskey errand (SIGN)" },
+	{ NULL, NULL, NULL, NULL }
+};
+
 static const OSSL_ALGORITHM *
 ep_query(void *provctx, int operation_id, int *no_cache)
 {
 	*no_cache = 0;
 
-	return operation_id == OSSL_OP_CIPHER ? ep_ciphers : NULL;
+	switch (operation_id) {
+	case OSSL_OP_CIPHER:    return cipher_mode ? ep_ciphers : NULL;
+	case OSSL_OP_KEYMGMT:   return sign_mode ? ep_keymgmts : NULL;
+	case OSSL_OP_SIGNATURE: return sign_mode ? ep_signatures : NULL;
+	default:                return NULL;
+	}
 }
 
 static int
@@ -465,7 +787,10 @@ OSSL_provider_init_errand(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *i
 {
 	const char *mode = getenv("TLS_ERRAND");
 
-	local_mode = mode && !strcmp(mode, "local");
+	local_mode  = mode && !strcmp(mode, "local");
+	sign_mode   = mode && (!strcmp(mode, "sign") || !strcmp(mode, "sign+records"));
+	cipher_mode = !mode || strcmp(mode, "sign"); /* every other value, as before Phase 3 */
+	sign_check  = getenv("TLS_ERRAND_CHECK") != NULL;
 	/* the local arm must run the stock arm's assembly path (AES-NI + PCLMUL) or nothing */
 	if (local_mode && !((OPENSSL_ia32cap_P[1] >> (57 - 32)) & 1 && (OPENSSL_ia32cap_P[1] >> (33 - 32)) & 1)) {
 		fprintf(stderr, "errand provider: no AES-NI/PCLMUL for the local arm\n");
@@ -487,4 +812,11 @@ unsigned long
 errand_provider_records(void)
 {
 	return errand_records;
+}
+
+/* For the client programs: how many SIGN errands this process has issued. */
+unsigned long
+errand_provider_signs(void)
+{
+	return errand_signs;
 }

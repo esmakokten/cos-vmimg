@@ -1,0 +1,13 @@
+# Phase 3 of w7_openssl_service (cut 1): the handshake key never enters the guest. G1 for the
+# own-boot anchors; signbench (G-sign: the service's public point against the certificate, a SIGN
+# errand verified in the guest, the provider's signature path; then the SIGN micro); nginx with
+# the placeholder key (nginx-sign.conf, staged by the tlskey-sign lib, which also generates the
+# key) against tlsbench -new in three arms: stock, sign errand only, sign + record errands.
+# Composed by composition_scripts/vmm_tls_sign.toml; the service's key header is installed with
+# `make install RECIPE=tls-sign INSTALL_NAMED=1 DESTDIR=... KEYDEST=...`.
+description = "TLS key errand, Phase 3: the handshake signature by a SIGN errand"
+init        = "run_tls_sign.sh"
+programs    = ["g1_selftest.c", "signbench.c", "census.c", "ipc_perf.c", "tlsbench.c"]
+modules     = ["errandbuf.c"]
+libs        = ["openssl", "nginx", "errand-provider", "tlskey-sign"]
+overlay     = "tls-errand"
