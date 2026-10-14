@@ -23,13 +23,14 @@
  * (-mgeneral-regs-only) rejects XMM clobbers; there the caller brackets the call with
  * kernel_fpu_begin/end instead.
  *
- * r11 is the server's RFLAGS. The fast path enters the server with sysretq, which loads
- * RFLAGS from r11, and the kernel never sets r11 on that path (__userregs_set sets only
- * rax, rcx/rip and rsp/rbp), so the server starts with whatever the guest left in r11. From
- * ring 3 that is usually the process's own RFLAGS from its last syscall (harmless); from the
- * guest kernel it was a pointer, whose bit 8 (TF) made the server's first instruction trap
- * (#DB). 0x3202 is the RFLAGS native components run with (IF, IOPL 3). This is a guest-side
- * workaround for a kernel fast-path defect (BUGS.md).
+ * r11 on the way in. The fast path enters the server with sysretq, which loads RFLAGS from
+ * r11. Kernels before the w8 fix (composite 947619e1, "one RFLAGS value for every sysret")
+ * did not set r11 on that path, so the server started with whatever the guest left there:
+ * from the guest kernel it was a pointer, whose bit 8 (TF) made the server's first
+ * instruction trap (#DB) and halted the host. A fixed kernel loads 0x3200 itself and ignores
+ * this value (w8 step 1.4 ran without the load: unchanged). The load stays, belt and braces
+ * (w5 DECISIONS A6), so this wrapper is also safe on an unfixed kernel; 0x3202 is the value
+ * a fixed kernel gives the server anyway (IF, IOPL 3; bit 1 always reads as set).
  *
  * Works from ring 3 and ring 0 alike: vmcall exits from any CPL.
  */
@@ -58,7 +59,7 @@ errand_call_f(unsigned long cap, unsigned long a0, unsigned long a1, unsigned lo
 		"pushq %%rbp\n\t"
 		"movabs $1f, %%r8\n\t"
 		"movabs $2f, %%r9\n\t"
-		"movq $0x3202, %%r11\n\t" /* the server's RFLAGS: see below */
+		"movq $0x3202, %%r11\n\t" /* belt and braces for unfixed kernels: see above */
 		"vmcall\n\t"
 		".align 8\n\t"
 		"1:\n\t"
