@@ -1,0 +1,7 @@
+# The r11/RFLAGS probe (w8_r11_rflags): five guest r11 values through tlskey_op's ARGS op, then
+# ipc_perf. Needs the Composite system composed from composition_scripts/vmm_r11_probe.toml
+# (tlskey_op at errand slot 1). Build with KVER=5.15.107, install with INSTALL_NAMED=1.
+description = "r11 probe: does the guest's r11 reach the errand service as RFLAGS? then ipc_perf"
+init        = "run_r11_probe.sh"
+programs    = ["r11_probe.c", "ipc_perf.c"]
+modules     = ["errandbuf.c"]
