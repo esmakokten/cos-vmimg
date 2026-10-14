@@ -1,0 +1,8 @@
+# The cold-footprint sweep (w7_openssl_service, REPORT A11 option b): G1 for the own-boot anchors,
+# then `tlsbench_raw cold` (warm and cache/TLB-evicted samples, both arms). One image for both
+# services: composition_scripts/vmm_tls_cold_{openssl,bearssl}.toml name it via VM_GUEST_IMAGE.
+description = "TLS key errand: the cold-footprint sweep (warm vs evicted, errand and in-guest)"
+init        = "run_tls_cold.sh"
+programs    = ["g1_selftest.c", "tlsbench_raw.c", "census.c", "ipc_perf.c"]
+modules     = ["errandbuf.c"]
+libs        = ["openssl"]

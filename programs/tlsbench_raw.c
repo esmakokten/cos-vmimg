@@ -16,6 +16,15 @@
  *
  * Correctness first: the errand's SEAL of NIST GCM test case 2 is compared with the known
  * ciphertext and tag, then each arm OPENs what the other SEALed.
+ *
+ * `tlsbench_raw cold` (w7, added; the default run above is unchanged): the cold-footprint
+ * variant. Per cell, COLD_N warm samples (the loops below) and COLD_N cold samples, each cold
+ * sample preceded -- outside the timed window -- by a read-stream over a 64 MB buffer (every
+ * 64 B line, 16,384 pages: past L2, L3 and the STLB, for the guest and the service alike, which
+ * share the core), then the record's header written and its payload re-read (in situ the
+ * provider has just copied them, so they are warm), then the same lfence/rdtsc window around
+ * the one call. Reads, not writes: a write stream leaves dirty lines whose write-backs leak
+ * into the timed window (results/check-cold/, 4 KB rows).
  */
 #define _GNU_SOURCE
 #include <stdint.h>
@@ -172,8 +181,100 @@ correctness(void)
 	return ok;
 }
 
+/* --- the cold-footprint variant (`tlsbench_raw cold`) --- */
+#define COLD_N   10000
+#define EVICT_SZ (64UL << 20)
+static unsigned char         *evb;
+static volatile unsigned long sink;
+
+static void
+evict(void)
+{
+	unsigned long s = 0;
+
+	for (unsigned long i = 0; i < EVICT_SZ; i += 64) s += evb[i];
+	sink += s;
+}
+
+static void
+touch(const unsigned char *p, size_t n)
+{
+	unsigned long s = 0;
+
+	for (size_t i = 0; i < n; i += 64) s += p[i];
+	sink += s;
+}
+
+/* One cell: COLD_N warm then COLD_N cold samples of one op on one arm. Returns 0, or -1 on a failed op. */
+static int
+cold_cell(size_t len, int open, int errand, unsigned char *local, const unsigned char *aad, uint64_t *seq,
+	  uint64_t *samples, struct pct *warm, struct pct *cold)
+{
+	unsigned char nonce[12];
+
+	for (int c = 0; c < 2; c++) {
+		for (int i = 0; i < COLD_N; i++) {
+			long r;
+			nonce_of(nonce, ++*seq);
+			if (errand) {
+				record_hdr(nonce, aad);
+				if (open) errand_seal(len);
+			} else if (open) inguest_seal(local, len, nonce, aad);
+			if (c) { /* cold: evict, then make the record warm as in situ */
+				evict();
+				if (errand) { record_hdr(nonce, aad); touch(map, PAYLOAD_OFF + len + TLSKEY_TAG_LEN); }
+				else touch(local, len + 16);
+			}
+			uint64_t t0 = t_begin();
+			if (errand) r = open ? errand_open(len) : errand_seal(len);
+			else if (open) r = inguest_open(local, len, nonce, aad);
+			else { inguest_seal(local, len, nonce, aad); r = 0; }
+			uint64_t t1 = t_end();
+			samples[i] = t1 - t0;
+			if (r) { printf("cold: %s %s failed %ld at %zu\n", errand ? "errand" : "in-guest", open ? "OPEN" : "SEAL", r, len); return -1; }
+		}
+		*(c ? cold : warm) = percentiles(samples, COLD_N);
+	}
+
+	return 0;
+}
+
+static int
+cold_main(void)
+{
+	static const size_t sizes[] = {256, 1024, 4096, 16384};
+	unsigned char aad[AAD_LEN], *local;
+	uint64_t *samples, seq = 1UL << 40;
+
+	evb     = aligned_alloc(4096, EVICT_SZ);
+	samples = aligned_alloc(64, COLD_N * sizeof(uint64_t));
+	local   = aligned_alloc(4096, 16384 + 64);
+	if (!evb || !samples || !local) { printf("cold: allocation failed\n"); return 1; }
+	for (unsigned long i = 0; i < EVICT_SZ; i += 4096) evb[i] = 1; /* fault it in once (mlockall) */
+	for (int i = 0; i < AAD_LEN; i++) aad[i] = (unsigned char)(0x17 + i);
+	for (int i = 0; i < 16384; i++) local[i] = (unsigned char)i;
+	memcpy(map + PAYLOAD_OFF, local, 16384);
+
+	printf("cold: %d warm + %d cold samples per cell, eviction %lu MB read-stream; columns: size op arm warm p50 p99 cold p50 p99 penalty p50\n",
+	       COLD_N, COLD_N, EVICT_SZ >> 20);
+	for (unsigned s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
+		for (int open = 0; open < 2; open++) {
+			for (int errand = 1; errand >= 0; errand--) {
+				struct pct w, c;
+				if (cold_cell(sizes[s], open, errand, local, aad, &seq, samples, &w, &c)) { printf("COLD RESULT: FAIL\n"); return 1; }
+				printf("COLD %6zu %s %-8s %8lu %8lu %8lu %8lu   penalty p50 %+ld\n", sizes[s], open ? "OPEN" : "SEAL",
+				       errand ? "errand" : "in-guest", w.p50, w.p99, c.p50, c.p99, (long)(c.p50 - w.p50));
+			}
+		}
+	}
+	printf("cold: errands served by the service so far: %lu\n", errand_call(TLSKEY_SLOT, TLSKEY_OP_COUNTERS, 0, 0, 0));
+	printf("COLD RESULT: DONE\n");
+
+	return 0;
+}
+
 int
-main(void)
+main(int argc, char **argv)
 {
 	static const size_t sizes[] = {256, 1024, 4096, 16384};
 	unsigned char nonce[12], aad[AAD_LEN], *local;
@@ -206,6 +307,11 @@ main(void)
 	printf("sweep: buffer %lu KB mapped, key id %lu, %d samples per point, AAD %d B, nonce 12 B\n", map_len / 1024, kid, NSAMPLES, AAD_LEN);
 
 	if (!correctness()) { printf("SWEEP RESULT: FAIL (correctness)\n"); return 1; }
+	if (argc > 1 && !strcmp(argv[1], "cold")) {
+		int r = cold_main();
+		errand_call(TLSKEY_SLOT, TLSKEY_OPKEY(TLSKEY_OP_DELKEY, kid), 0, 0, 0);
+		return r;
+	}
 
 	samples = aligned_alloc(64, NSAMPLES * sizeof(uint64_t));
 	local   = aligned_alloc(4096, 16384 + 64);
