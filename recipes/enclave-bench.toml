@@ -1,0 +1,8 @@
+# The system-call bounce (w9_syscall_bounce): a program inside the enclave component (errand
+# slot 4) makes its system calls through this guest, against the same programs run natively.
+# Needs composition_scripts/vmm_enclave_bench.toml (no tlskey: errandbuf is given the enclave's
+# gpa/len, and `encbench census` replaces census.c, which asks slot 1). No libs, no fragment.
+description = "System-call bounce: P0 null, P1 getpid, P2 Veil's seven, bounced through the enclave component and native"
+init        = "run_enclave_bench.sh"
+programs    = ["encbench.c", "ipc_perf.c"]
+modules     = ["errandbuf.c"]

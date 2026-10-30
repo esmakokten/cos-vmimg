@@ -110,9 +110,12 @@ vm_ipc_call(unsigned long cap_no,
 	return ret;
 }
 
-void main(void)
+/* `ipc_perf slot0` (w9) runs only the slot-0 benchmark: in a composition with slot 1 empty, each
+ * slot-1 vmcall makes the kernel print "no sinv at cap" (vmx_exit.c), 100,000 serial lines. */
+int main(int argc, char **argv)
 {
 	const int N = 100000;  /* Number of iterations for each benchmark */
+	const int slot0_only = argc > 1 && !strcmp(argv[1], "slot0");  /* Number of iterations for each benchmark */
 	unsigned long ret0, ret1, ret2;
 
 	printf("\n");
@@ -133,7 +136,7 @@ void main(void)
 
 	if (!samples_slot0 || !samples_slot1) {
 		printf("Error: Failed to allocate memory for samples\n");
-		return;
+		return 1;
 	}
 
 	/* Initialize statistics structures */
@@ -156,6 +159,12 @@ void main(void)
 	}
 
 	stats_print_detailed(&stats_slot0, "vmcall Slot 0: pong_args(10,20,30,40)");
+
+	if (slot0_only) {
+		printf("[vm_ipc_perf] slot 0 only: median %.2f cycles\n", stats_median(&stats_slot0));
+		printf("[vm_ipc_perf] DONE\n\n");
+		return 0;
+	}
 
 	printf("\n");
 	printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
@@ -193,4 +202,5 @@ void main(void)
 	free(samples_slot1);
 
 	printf("[vm_ipc_perf] DONE\n\n");
+	return 0;
 }
