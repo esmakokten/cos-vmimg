@@ -17,7 +17,12 @@
 #include <sched.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <string.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/ioctl.h>
 #include "stats.h"
+#include "errand_id_abi.h"
 
 /* Serialized RDTSC measurements */
 static inline uint64_t rdtsc_serialized_start(void) {
@@ -110,7 +115,159 @@ vm_ipc_call(unsigned long cap_no,
 	return ret;
 }
 
-void main(void)
+/*
+ * w11 (identity): who may make the vmcall.
+ *   --register        open /dev/errand_id and register this process before running
+ *   --no-register     run unregistered (the process Q); prints its root
+ *   --want-bit12      with --no-register: exit 3 at once unless the root has bit 12 set (A8)
+ *   --attempts N      instead of the benchmark: N calls to slot 0, counted served/refused/other
+ *   --hold            after the run, keep the registration until SIGTERM, then unregister
+ *   --kernel-vmcall N N ring-0 vmcalls with slot 0 in rax, from the module (T2)
+ *   --counters        ask the VMM to print its identity counters
+ * With no flag, ipc_perf is the T0 benchmark it always was.
+ */
+static int id_fd = -1;
+static volatile sig_atomic_t id_stop;
+
+static void id_on_term(int sig) { (void)sig; id_stop = 1; }
+
+static int
+id_open(void)
+{
+	if (id_fd < 0) id_fd = open("/dev/errand_id", O_RDWR);
+	if (id_fd < 0) printf("ipc_perf: cannot open /dev/errand_id\n");
+	return id_fd;
+}
+
+static unsigned long
+id_root(void)
+{
+	unsigned long root = 0;
+
+	if (id_open() >= 0 && ioctl(id_fd, ERRAND_ID_IOC_ROOT, &root)) root = 0;
+	return root;
+}
+
+/* 1,000 checked calls per slot before anything is timed: the correctness gate on the real path. */
+static int
+id_check(void)
+{
+	int i, bad0 = 0, bad1 = 0;
+
+	for (i = 0; i < 1000; i++) {
+		if (vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) != 100) bad0++;
+		if (vm_ipc_call(VM_IPC_CAP_ENCODE(1), 42, 100, 5, 7) != 12) bad1++;
+	}
+	printf("ipc_perf: check 1000 calls per slot: slot 0 bad %d, slot 1 bad %d: %s\n",
+	       bad0, bad1, (bad0 || bad1) ? "CHECK FAILED" : "CHECK PASSED");
+	return bad0 || bad1;
+}
+
+static void
+id_attempts(unsigned long n)
+{
+	unsigned long i, served = 0, refused = 0, other = 0, last = 0;
+
+	for (i = 0; i < n; i++) {
+		last = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+		if (last == 100) served++;
+		else if ((long)last == -1 /* -EPERM */) refused++;
+		else other++;
+	}
+	printf("ipc_perf: attempts pid %d root %#lx: %lu calls, served %lu, refused %lu, other %lu (last %ld)\n",
+	       getpid(), id_root(), n, served, refused, other, (long)last);
+}
+
+static int
+id_main(int argc, char **argv, int *bench)
+{
+	int i, reg = 0, unreg = 0, want12 = 0, hold = 0;
+	unsigned long attempts = 0, kvm = 0;
+	long r;
+
+	for (i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--register")) reg = 1;
+		else if (!strcmp(argv[i], "--no-register")) unreg = 1;
+		else if (!strcmp(argv[i], "--want-bit12")) want12 = 1;
+		else if (!strcmp(argv[i], "--hold")) hold = 1;
+		else if (!strcmp(argv[i], "--attempts") && i + 1 < argc) attempts = strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--kernel-vmcall") && i + 1 < argc) kvm = strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--counters")) {
+			if (id_open() < 0) return 1;
+			r = ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
+			printf("ipc_perf: counters requested: %ld\n", r);
+			*bench = 0;
+		} else {
+			printf("ipc_perf: unknown argument %s\n", argv[i]);
+			return 1;
+		}
+	}
+	if (reg) {
+		if (id_open() < 0) return 1;
+		r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER);
+		printf("ipc_perf: pid %d registered root %#lx: %ld\n", getpid(), id_root(), r);
+		if (r) return 1;
+	}
+	if (unreg) {
+		unsigned long root = id_root();
+
+		printf("ipc_perf: pid %d unregistered, root %#lx (bit 12 %s)\n", getpid(), root,
+		       (root & 0x1000) ? "set" : "clear");
+		if (want12 && !(root & 0x1000)) return 3;
+	}
+	if (kvm) {
+		struct errand_id_kvmcall k = { .rax = VM_IPC_CAP_ENCODE(0), .count = kvm };
+
+		if (id_open() < 0) return 1;
+		r = ioctl(id_fd, ERRAND_ID_IOC_KERNEL_VMCALL, &k);
+		printf("ipc_perf: ring-0 vmcalls rax %#lx: %lu calls, refused (-ENOSYS) %lu, other %lu (last %ld): %ld\n",
+		       k.rax, k.count, k.n_enosys, k.n_other, (long)k.last_rax, r);
+		*bench = 0;
+	}
+	if (attempts) {
+		pin_cpu0();
+		id_attempts(attempts);
+		*bench = 0;
+	}
+	if (hold) {
+		signal(SIGTERM, id_on_term);
+		printf("ipc_perf: pid %d HOLDING its registration\n", getpid());
+		fflush(stdout);
+		while (!id_stop) pause();
+	}
+	return 0;
+}
+
+static void
+id_exit(void)
+{
+	long r;
+
+	if (id_fd < 0) return;
+	r = ioctl(id_fd, ERRAND_ID_IOC_UNREGISTER);
+	printf("ipc_perf: pid %d unregistered: %ld\n", getpid(), r);
+}
+
+static void ipc_perf_bench(void);
+
+int main(int argc, char **argv)
+{
+	int bench = 1, reg = 0, i;
+
+	for (i = 1; i < argc; i++) if (!strcmp(argv[i], "--register")) reg = 1;
+	if (id_main(argc, argv, &bench)) return 1;
+	if (bench) {
+		if (argc > 1 && id_check()) {
+			if (reg) id_exit();
+			return 1;
+		}
+		ipc_perf_bench();
+	}
+	if (reg) id_exit();
+	return 0;
+}
+
+static void ipc_perf_bench(void)
 {
 	const int N = 100000;  /* Number of iterations for each benchmark */
 	unsigned long ret0, ret1, ret2;
