@@ -109,9 +109,16 @@ vm_ipc_call(unsigned long cap_no,
 	                     "movl $1, %%ecx\n\t"	\
 	                     "3:\n\t"			\
     					 "popq %%rbp\n\t"
-	                     : "=a"(ret), "=c"(fault)
-	                     : "a"(cap_no), "b"(arg1), "S"(arg2), "D"(arg3), "d"(arg4), "c"(0)
-	                     : "memory", "cc", "r8", "r9", "r11","r12");
+	                     /*
+	                      * rbx, rsi, rdi, rdx are read-write: the errand returns values in rsi
+	                      * and rdi (and the return path may change the others), so they are not
+	                      * the arguments any more after the vmcall. As inputs only, a loop kept
+	                      * its constant arguments in them and passed the previous call's returns
+	                      * (w11, BUGS.md).
+	                      */
+	                     : "=a"(ret), "=c"(fault), "+b"(arg1), "+S"(arg2), "+D"(arg3), "+d"(arg4)
+	                     : "a"(cap_no), "c"(0)
+	                     : "memory", "cc", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"); /* as libErrand.h */
 	return ret;
 }
 
