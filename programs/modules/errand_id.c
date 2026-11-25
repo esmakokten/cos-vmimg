@@ -41,6 +41,15 @@
 
 #include "errand_id_abi.h"
 
+/*
+ * Phase 6 (DECISIONS A78): with self_reg=1 the module is only the attacker of the tests. Its
+ * registration ioctls answer -ENOSYS (a process registers itself with the cpuid leaf); the attack
+ * and diagnostic ioctls stay.
+ */
+static bool self_reg;
+module_param(self_reg, bool, 0444);
+MODULE_PARM_DESC(self_reg, "Phase 6: no registration through the module");
+
 /* A ring-0 vmcall: rax = op, rbx = arg; the VMM answers in rax and resumes at RIP + 3. */
 static long
 errand_id_vmcall(unsigned long op, unsigned long arg)
@@ -401,6 +410,105 @@ errand_id_t6(struct file *f)
 	return b[0] | (b[1] << 8);
 }
 
+/* Phase 6: current's leaf entry for user address `va`, or NULL (no large pages) */
+static pte_t *
+errand_id_leaf(unsigned long va)
+{
+	struct mm_struct *mm = current->mm;
+	pgd_t            *pgd = pgd_offset(mm, va);
+	p4d_t            *p4d;
+	pud_t            *pud;
+	pmd_t            *pmd;
+
+	if (pgd_none(*pgd)) return NULL;
+	p4d = p4d_offset(pgd, va);
+	pud = pud_offset(p4d, va);
+	if (pud_none(*pud) || pud_large(*pud)) return NULL;
+	pmd = pmd_offset(pud, va);
+	if (pmd_none(*pmd) || pmd_large(*pmd)) return NULL;
+	return pte_offset_kernel(pmd, va);
+}
+
+/*
+ * T6 under Phase 6: the gate frame is the VMM's, outside Linux's RAM. Find it through the process's
+ * own leaf, map it (memremap: not RAM, so an ioremap_cache mapping) and write one byte, as a
+ * compromised kernel would.
+ */
+static long
+errand_id_t6_va(unsigned long va)
+{
+	pte_t         *pte = errand_id_leaf(va & PAGE_MASK);
+	unsigned long  pa;
+	unsigned char *b;
+	long           r;
+
+	if (!pte || !pte_present(*pte)) return -EFAULT;
+	pa = pte_pfn(*pte) << PAGE_SHIFT;
+	if (!(b = memremap(pa, PAGE_SIZE, MEMREMAP_WB))) return -ENOMEM;
+	pr_info("errand_id: T6 writing the frame %#lx behind %#lx (pid %d)\n", pa, va, current->pid);
+	WRITE_ONCE(b[0], 0x90);
+	r = b[0] | (b[1] << 8);
+	memunmap(b);
+	return r;
+}
+
+/*
+ * T16 (Phase 6): a read-only 2 MiB leaf at a 2 MiB-aligned user address with no table under it, so the
+ * VMM's check of a gate address behind a large page can be exercised (the guest has neither THP nor
+ * hugetlbfs). `va | 1` removes it again before the process exits.
+ */
+static struct page *t16_pages;
+static pmd_t       *t16_pmd;
+
+static long
+errand_id_t16_pmd(unsigned long arg)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long     va = arg & ~1UL;
+	pgd_t            *pgd;
+	p4d_t            *p4d;
+	pud_t            *pud;
+	pmd_t            *pmd;
+
+	if (arg & 1) {
+		if (!t16_pmd) return -EINVAL;
+		pmd_clear(t16_pmd);
+		preempt_disable(); __flush_tlb_all(); preempt_enable();
+		__free_pages(t16_pages, PMD_SHIFT - PAGE_SHIFT);
+		t16_pmd = NULL;
+		t16_pages = NULL;
+		return 0;
+	}
+	if (t16_pmd || (va & ~PMD_MASK)) return -EINVAL;
+	pgd = pgd_offset(mm, va);
+	if (pgd_none(*pgd)) return -EFAULT;
+	p4d = p4d_offset(pgd, va);
+	pud = pud_offset(p4d, va);
+	if (pud_none(*pud) || pud_large(*pud)) return -EFAULT;
+	pmd = pmd_offset(pud, va);
+	if (!pmd_none(*pmd)) return -EBUSY;
+	if (!(t16_pages = alloc_pages(GFP_KERNEL, PMD_SHIFT - PAGE_SHIFT))) return -ENOMEM;
+	set_pmd(pmd, __pmd((page_to_pfn(t16_pages) << PAGE_SHIFT) | _PAGE_PRESENT | _PAGE_USER | _PAGE_ACCESSED | _PAGE_PSE));
+	t16_pmd = pmd;
+	pr_info("errand_id: T16 a read-only 2 MiB leaf at %#lx (pid %d)\n", va, current->pid);
+	return 0;
+}
+
+/* T16 (Phase 6): the registration leaf, issued from ring 0 */
+static long
+errand_id_cpuid_ring0(unsigned long uarg)
+{
+	struct errand_id_cpuid c;
+	unsigned int           a = ERRAND_ID_CPUID_LEAF, b, cx, d;
+
+	if (copy_from_user(&c, (void __user *)uarg, sizeof(c))) return -EFAULT;
+	cx = (unsigned int)c.op;
+	asm volatile("cpuid" : "+a"(a), "=b"(b), "+c"(cx), "=d"(d) : "S"(c.gate_va), "D"(c.comp) : "memory");
+	c.eax = (unsigned long)(long)(int)a;
+	pr_info("errand_id: T16 the leaf from ring 0 (op %lu, gate %#lx): %ld\n", c.op, c.gate_va, (long)c.eax);
+	return copy_to_user((void __user *)uarg, &c, sizeof(c)) ? -EFAULT : 0;
+}
+
 /*
  * T4: rewrite current's leaf entry for user address `va` to point at a module page holding a copy
  * of the same bytes (so the process keeps running), as a compromised kernel would. On a locked
@@ -503,7 +611,25 @@ errand_id_kernel_vmcall(unsigned long uarg)
 static long
 errand_id_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
+	if (self_reg) {
+		switch ((unsigned long)cmd) {
+		case ERRAND_ID_IOC_REGISTER:
+		case ERRAND_ID_IOC_UNREGISTER:
+		case ERRAND_ID_IOC_REGISTER_LOCKED:
+		case ERRAND_ID_IOC_REGISTER_GATE:
+			return -ENOSYS; /* A78: the module registers nobody */
+		}
+	}
 	switch ((unsigned long)cmd) {
+	case ERRAND_ID_IOC_GATE_VA:
+		t11_gate = arg;
+		return 0;
+	case ERRAND_ID_IOC_T6_VA:
+		return errand_id_t6_va(arg);
+	case ERRAND_ID_IOC_T16_PMD:
+		return errand_id_t16_pmd(arg);
+	case ERRAND_ID_IOC_CPUID_RING0:
+		return errand_id_cpuid_ring0(arg);
 	case ERRAND_ID_IOC_REGISTER_GATE:
 		return errand_id_register_gate(f, arg);
 	case ERRAND_ID_IOC_T5:
@@ -573,7 +699,8 @@ errand_id_init(void)
 		pr_err("errand_id: misc_register failed (%d)\n", ret);
 		return ret;
 	}
-	pr_info("errand_id: /dev/errand_id ready (PTI %s)\n", boot_cpu_has(X86_FEATURE_PTI) ? "on" : "off");
+	pr_info("errand_id: /dev/errand_id ready (PTI %s)%s\n", boot_cpu_has(X86_FEATURE_PTI) ? "on" : "off",
+	        self_reg ? ", self_reg: the attacker only, no registration ioctls" : "");
 	return 0;
 }
 
