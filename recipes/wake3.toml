@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 4b: 4.8: the wake-latency loop (50 s) beside W1 and the T3 background load
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "4.8: the wake-latency loop (50 s) beside W1 and the T3 background load"
+init        = "run_wake3.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

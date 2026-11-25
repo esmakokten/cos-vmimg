@@ -212,6 +212,8 @@ vm_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned l
  *                     argument, every result checked; the module's 1 kHz timer counts what it sees
  *   --t11-tamper      with --t11: the module also writes a marker into the frame (T11)
  *   --cpuid-cost      the median of 100,000 timed user-mode cpuid round trips (4.8)
+ *   --wake N          for N seconds, sleep to absolute 1 ms deadlines and record how late each
+ *                     wake-up is (A55's wake-latency loop); prints p50, p99 and max in microseconds
  *   --t12             after registering with a gate: the module single-steps this thread into the
  *                     gate's vmcall and writes the marker there (T12)
  *   --stub-jmp        with --register-locked: the timed slot-0 call through a copy of the stub
@@ -631,6 +633,31 @@ cmp_u64(const void *a, const void *b)
 }
 
 static void
+id_wake(unsigned long secs)
+{
+	static uint64_t late[200000];
+	struct timespec next, now;
+	unsigned long   n = 0, i, total = secs * 1000;
+
+	if (total > 200000) total = 200000;
+	clock_gettime(CLOCK_MONOTONIC, &next);
+	for (i = 0; i < total; i++) {
+		next.tv_nsec += 1000000;
+		if (next.tv_nsec >= 1000000000) {
+			next.tv_nsec -= 1000000000;
+			next.tv_sec++;
+		}
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, 0);
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		late[n++] = (uint64_t)((now.tv_sec - next.tv_sec) * 1000000000L + (now.tv_nsec - next.tv_nsec));
+	}
+	qsort(late, n, sizeof(late[0]), cmp_u64);
+	printf("ipc_perf: wake latency pid %d: %lu wake-ups of 1 ms, lateness p50 %.1f us, p99 %.1f us, max %.1f us\n", getpid(),
+	       n, late[n / 2] / 1000.0, late[n * 99 / 100] / 1000.0, late[n - 1] / 1000.0);
+	fflush(stdout);
+}
+
+static void
 id_cpuid_cost(void)
 {
 	static uint64_t d[100000];
@@ -705,6 +732,7 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--t12")) t12 = 1;
 		else if (!strcmp(argv[i], "--stub-jmp")) stub_jmp = 1;
 		else if (!strcmp(argv[i], "--cpuid-cost")) { id_cpuid_cost(); *bench = 0; }
+		else if (!strcmp(argv[i], "--wake") && i + 1 < argc) { id_wake(strtoul(argv[++i], 0, 0)); *bench = 0; }
 		else if (!strcmp(argv[i], "--dump")) {
 			if (id_open() < 0) return 1;
 			r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
