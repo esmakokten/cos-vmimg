@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 2b: H1: the T3 run-2 loop and load with P registered unlocked (plain --register)
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "H1: the T3 run-2 loop and load with P registered unlocked (plain --register)"
+init        = "run_h1.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

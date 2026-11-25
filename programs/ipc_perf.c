@@ -142,7 +142,10 @@ vm_ipc_call(unsigned long cap_no,
  *                     made first); a later allocation or page fault would revoke the registration
  *   --no-preset       with --register-locked: the module does not pre-set accessed/dirty (T3 arm B)
  *   --heap-mb N       allocate and touch N MiB of heap before registering (T9)
- *   --seconds N       instead of the benchmark: call slot 0 for N seconds, counted (T3)
+ *   --seconds N       instead of the benchmark: call slot 0 for N seconds, counted (T3); prints the
+ *                     background load's progress (/tmp/spawn.cnt, /tmp/churn.cnt) at the window's start
+ *                     and end; works with --register and --register-locked
+ *   --no-cpuid        with --seconds: no cpuid in the loop (T3 run-1 form: fast-path exits only)
  *   --t4              after registering: have the module rewrite one of our code-page entries, then
  *                     10^4 calls counted, then the entry restored (T4)
  *   --exit-registered exit without unregistering (T7)
@@ -153,6 +156,23 @@ vm_ipc_call(unsigned long cap_no,
 static int id_fd = -1;
 static uint64_t *bench_pre0, *bench_pre1; /* the benchmark's buffers, allocated before a locked registration */
 static int id_exit_registered;
+static int id_no_cpuid;
+
+/* A counter the background load keeps in a file; read with no allocation (a locked P must not). */
+static long
+load_count(const char *path)
+{
+	static char buf[32];
+	long        n;
+	int         fd = open(path, O_RDONLY);
+
+	if (fd < 0) return -1;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0) return -1;
+	buf[n] = 0;
+	return strtol(buf, 0, 10);
+}
 static volatile sig_atomic_t id_stop;
 
 static void id_on_term(int sig) { (void)sig; id_stop = 1; }
@@ -295,6 +315,8 @@ id_seconds(unsigned long secs)
 	unsigned long   n = 0, served = 0, refused = 0, other = 0, last = 0;
 	struct timespec t0, t;
 
+	long            spawn0 = load_count("/tmp/spawn.cnt"), churn0 = load_count("/tmp/churn.cnt");
+
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	for (;;) {
 		last = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
@@ -309,13 +331,15 @@ id_seconds(unsigned long secs)
 			 * entry, so a loop of fast-path calls alone starves the guest's clock (T3 run 1, an
 			 * RCU stall and a hang; BUGS.md). The benchmark's own cpuid does the same.
 			 */
-			__asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+			if (!id_no_cpuid) __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
 			clock_gettime(CLOCK_MONOTONIC, &t);
 			if ((unsigned long)(t.tv_sec - t0.tv_sec) >= secs) break;
 		}
 	}
-	printf("ipc_perf: %lu s pid %d: %lu calls, served %lu, refused %lu, other %lu (last %ld)\n", secs, getpid(), n,
-	       served, refused, other, (long)last);
+	printf("ipc_perf: %lu s pid %d%s: %lu calls, served %lu, refused %lu, other %lu (last %ld)\n", secs, getpid(),
+	       id_no_cpuid ? " (no cpuid)" : "", n, served, refused, other, (long)last);
+	printf("ipc_perf: load during the window: processes spawned %ld -> %ld, churn rounds %ld -> %ld\n", spawn0,
+	       load_count("/tmp/spawn.cnt"), churn0, load_count("/tmp/churn.cnt"));
 }
 
 static void ipc_perf_bench(void);
@@ -359,6 +383,7 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--t4")) t4 = 1;
 		else if (!strcmp(argv[i], "--exit-registered")) id_exit_registered = 1;
 		else if (!strcmp(argv[i], "--churn")) churn = 1;
+		else if (!strcmp(argv[i], "--no-cpuid")) id_no_cpuid = 1;
 		else if (!strcmp(argv[i], "--dump")) {
 			if (id_open() < 0) return 1;
 			r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
@@ -381,12 +406,23 @@ id_main(int argc, char **argv, int *bench)
 		}
 	}
 	if (churn) {
+		unsigned long rounds = 0;
+
 		for (;;) {
 			char *m = mmap(0, 16 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
 			if (m == MAP_FAILED) continue;
 			memset(m, 1, 16 << 20);
 			munmap(m, 16 << 20);
+			if ((++rounds & 3) == 0) {
+				char b[32];
+				int  fd = open("/tmp/churn.cnt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+				if (fd >= 0) {
+					write(fd, b, snprintf(b, sizeof(b), "%lu\n", rounds));
+					close(fd);
+				}
+			}
 		}
 	}
 	if (locked) {
@@ -416,6 +452,11 @@ id_main(int argc, char **argv, int *bench)
 		r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER);
 		printf("ipc_perf: pid %d registered root %#lx: %ld\n", getpid(), id_root(), r);
 		if (r) return 1;
+		if (secs) { /* H1: the T3 loop with a plain, unlocked registration */
+			pin_cpu0();
+			id_seconds(secs);
+			*bench = 0;
+		}
 	}
 	if (unreg) {
 		unsigned long root = id_root();
