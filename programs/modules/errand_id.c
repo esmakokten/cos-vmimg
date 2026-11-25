@@ -37,6 +37,7 @@
 #include <linux/io.h>
 #include <linux/hrtimer.h>
 #include <asm/irq_regs.h>
+#include <linux/kdebug.h>
 
 #include "errand_id_abi.h"
 
@@ -344,6 +345,48 @@ errand_id_t11(unsigned long uarg)
 	return copy_to_user((void __user *)uarg, &t11, sizeof(t11)) ? -EFAULT : 0;
 }
 
+/*
+ * T12 (Phase 4, A57): single-stepping into the gate. The ioctl sets the trap flag in the caller's
+ * saved frame; every user-mode #DB of that task then reaches this die notifier, which writes the
+ * marker into rbx at the #DB whose ip is the gate's vmcall, clears the flag, and consumes the
+ * trap (no SIGTRAP). No interrupt and no VM exit is involved, so the hook (A51) cannot see it.
+ */
+static struct task_struct *t12_task;
+static unsigned long       t12_steps, t12_hit;
+
+static int
+t12_notify(struct notifier_block *nb, unsigned long val, void *data)
+{
+	struct die_args *a = data;
+
+	if (val != DIE_DEBUG || current != t12_task || !a->regs || !user_mode(a->regs)) return NOTIFY_DONE;
+	t12_steps++;
+	if (a->regs->ip == t11_gate + ERRAND_ID_GATE_VMCALL_OFF) {
+		a->regs->bx     = ERRAND_ID_T11_MARK;
+		a->regs->flags &= ~X86_EFLAGS_TF;
+		t12_hit++;
+		t12_task = NULL;
+	} else if (t12_steps > 100000) {
+		a->regs->flags &= ~X86_EFLAGS_TF; /* never reached the gate: give up */
+		t12_task = NULL;
+	}
+	return NOTIFY_STOP;
+}
+
+static struct notifier_block t12_nb = { .notifier_call = t12_notify };
+static int                   t12_registered;
+
+static long
+errand_id_t12(unsigned long uarg)
+{
+	if (uarg == 1) return (long)(t12_hit | (t12_steps << 8)); /* the result of the last arm */
+	if (!t12_registered && !register_die_notifier(&t12_nb)) t12_registered = 1;
+	t12_steps = t12_hit = 0;
+	t12_task  = current;
+	task_pt_regs(current)->flags |= X86_EFLAGS_TF;
+	return 0;
+}
+
 /* T6: one byte written to the gate page through the kernel's direct map. */
 static long
 errand_id_t6(struct file *f)
@@ -469,6 +512,8 @@ errand_id_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		return errand_id_t6(f);
 	case ERRAND_ID_IOC_T11:
 		return errand_id_t11(arg);
+	case ERRAND_ID_IOC_T12:
+		return errand_id_t12(arg);
 	}
 
 	unsigned long roots[2];
@@ -538,6 +583,7 @@ errand_id_exit(void)
 	misc_deregister(&errand_id_dev);
 	free_page((unsigned long)lock_page);
 	free_page((unsigned long)gate_regpage);
+	if (t12_registered) unregister_die_notifier(&t12_nb);
 }
 
 module_init(errand_id_init);

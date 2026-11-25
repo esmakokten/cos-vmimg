@@ -135,6 +135,12 @@ vm_ipc_call(unsigned long cap_no,
  */
 static unsigned long gate_fn; /* the gate's address once registered through it; 0 = inline vmcall */
 
+/*
+ * T11/T12: did a call carry the module's marker? Through rax (a forged result) it comes back whole;
+ * through rbx (a forged argument) pong_args returns the sum as an int, so its low 32 bits.
+ */
+#define T11_MARKED(v) ((v) == ERRAND_ID_T11_MARK || ((v) & 0xffffffffUL) == (ERRAND_ID_T11_MARK & 0xffffffffUL))
+
 static inline unsigned long
 vm_gate_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4)
 {
@@ -206,6 +212,10 @@ vm_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned l
  *                     argument, every result checked; the module's 1 kHz timer counts what it sees
  *   --t11-tamper      with --t11: the module also writes a marker into the frame (T11)
  *   --cpuid-cost      the median of 100,000 timed user-mode cpuid round trips (4.8)
+ *   --t12             after registering with a gate: the module single-steps this thread into the
+ *                     gate's vmcall and writes the marker there (T12)
+ *   --stub-jmp        with --register-locked: the timed slot-0 call through a copy of the stub
+ *                     entered by a direct jmp and left by a direct jmp (4.10), 100,000 samples
  *   --stub-local      with --register-locked: call through a copy of the gate's stub in ipc_perf's
  *                     own text (no VMCALL_GATE needed): the stub's cost alone (3.10)
  * With no flag, ipc_perf is the T0 benchmark it always was.
@@ -538,7 +548,7 @@ id_t11(unsigned long secs, int tamper)
 		n++;
 		if (v == x) ok++;
 		else if ((long)v == -1) refused++;
-		else if (v >= ERRAND_ID_T11_MARK && v < ERRAND_ID_T11_MARK + 0x1000000UL) marked++;
+		else if (T11_MARKED(v)) marked++;
 		else mismatch++;
 		if ((n & 0xfff) == 0) {
 			clock_gettime(CLOCK_MONOTONIC, &t);
@@ -555,6 +565,61 @@ id_t11(unsigned long secs, int tamper)
 	       a.in_gate[6], a.blank, a.nonblank, a.nonblank_own, a.tampered);
 	fflush(stdout);
 	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS); /* pong after */
+}
+
+/*
+ * 4.10 (A58): one timed slot-0 call through a copy of the stub that is entered by a direct jmp and
+ * left by a direct jmp, so no ret runs between the vmcall and the second timestamp. Serialized as
+ * rdtsc_serialized_start/end are (cpuid; rdtsc ... rdtscp; lfence). Returns the cycles; the call's
+ * result goes to jmp_last_rax.
+ */
+static int cmp_u64(const void *a, const void *b);
+unsigned long jmp_last_rax;
+unsigned long bench_jmp_sample(void);
+__asm__(".text\n.globl bench_jmp_sample\nbench_jmp_sample:\n\t"
+        "pushq %rbx\n\tpushq %rbp\n\tpushq %r12\n\tpushq %r13\n\tpushq %r14\n\tpushq %r15\n\t"
+        "xorl %eax, %eax\n\tcpuid\n\trdtsc\n\tshlq $32, %rdx\n\torq %rdx, %rax\n\tpushq %rax\n\t"
+        "movq $0x410000, %rax\n\txorl %ecx, %ecx\n\tmovl $10, %ebx\n\tmovl $20, %esi\n\tmovl $30, %edi\n\tmovl $40, %edx\n\t"
+        "jmp jstub_entry\n"
+        "jstub_back:\n\t"
+        "movq %rax, jmp_last_rax(%rip)\n\t"
+        "rdtscp\n\tlfence\n\tshlq $32, %rdx\n\torq %rdx, %rax\n\t"
+        "popq %rcx\n\tsubq %rcx, %rax\n\t"
+        "popq %r15\n\tpopq %r14\n\tpopq %r13\n\tpopq %r12\n\tpopq %rbp\n\tpopq %rbx\n\t"
+        "ret\n"
+        "jstub_entry:\n\t"
+        "pushq %rbp\n\tmovl $0x3202, %r11d\n\tvmcall\n\tpopq %rbp\n\tjmp jstub_back\n");
+
+static void
+id_stub_jmp(void)
+{
+	unsigned long i, bad = 0;
+
+	for (i = 0; i < 100000; i++) {
+		bench_pre0[i] = bench_jmp_sample();
+		if (jmp_last_rax != 100) bad++;
+	}
+	qsort(bench_pre0, 100000, sizeof(bench_pre0[0]), cmp_u64);
+	printf("ipc_perf: stub-jmp slot 0: 100000 samples, wrong results %lu\n", bad);
+	printf("Min:            %lu\nMedian (50%%):   %lu.00\n", (unsigned long)bench_pre0[0], (unsigned long)bench_pre0[50000]);
+	printf("  Slot 0 median: %lu.00 cycles\n", (unsigned long)bench_pre0[50000]);
+	fflush(stdout);
+}
+
+static void
+id_t12(void)
+{
+	unsigned long v, r;
+
+	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
+	ioctl(id_fd, ERRAND_ID_IOC_T12, 0);
+	v = vm_call(VM_IPC_CAP_ENCODE(0), 5, 0, 0, 0); /* single-stepped into the gate */
+	r = (unsigned long)ioctl(id_fd, ERRAND_ID_IOC_T12, 1);
+	printf("ipc_perf: T12 pid %d: single-stepped call with argument 5: result %#lx (%s); module: %lu steps, reached the vmcall %lu\n",
+	       getpid(), v, v == 5 ? "the process's argument" : T11_MARKED(v) ? "SERVED WITH THE MARKER" : (long)v == -1 ? "refused" : "other",
+	       r >> 8, r & 0xff);
+	fflush(stdout);
+	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
 }
 
 static int
@@ -607,7 +672,7 @@ static int
 id_main(int argc, char **argv, int *bench)
 {
 	int i, reg = 0, unreg = 0, want12 = 0, hold = 0, locked = 0, t4 = 0, churn = 0, gate = -1, t5 = 0, t6 = 0, t8 = 0;
-	int stub_local = 0, t11_tamper = 0;
+	int stub_local = 0, t11_tamper = 0, t12 = 0, stub_jmp = 0;
 	unsigned long t11_secs = 0;
 	unsigned long ainline = 0;
 	unsigned long attempts = 0, kvm = 0, lflags = 0, heap_mb = 0, secs = 0;
@@ -637,6 +702,8 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--stub-local")) stub_local = 1;
 		else if (!strcmp(argv[i], "--t11") && i + 1 < argc) t11_secs = strtoul(argv[++i], 0, 0);
 		else if (!strcmp(argv[i], "--t11-tamper")) t11_tamper = 1;
+		else if (!strcmp(argv[i], "--t12")) t12 = 1;
+		else if (!strcmp(argv[i], "--stub-jmp")) stub_jmp = 1;
 		else if (!strcmp(argv[i], "--cpuid-cost")) { id_cpuid_cost(); *bench = 0; }
 		else if (!strcmp(argv[i], "--dump")) {
 			if (id_open() < 0) return 1;
@@ -696,7 +763,7 @@ id_main(int argc, char **argv, int *bench)
 			memset(t5_stack, 0, sizeof(t5_stack)); /* T5's data, present before registering */
 			t5_saved_rsp = t5_rax = 0;
 		}
-		lock_prepare(heap_mb, *bench && !attempts && !secs && !t4 && !t5 && !t6 && !t8 && !ainline && !t11_secs);
+		lock_prepare(heap_mb, (*bench && !attempts && !secs && !t4 && !t5 && !t6 && !t8 && !ainline && !t11_secs && !t12) || stub_jmp);
 		if (gate >= 0) {
 			struct errand_id_gate_req req = { (unsigned long)g, (unsigned long)gate, lflags };
 
@@ -729,6 +796,8 @@ id_main(int argc, char **argv, int *bench)
 		if (t6) { id_t6(); *bench = 0; }
 		if (t8) { id_t8(); *bench = 0; }
 		if (t11_secs) { id_t11(t11_secs, t11_tamper); *bench = 0; }
+		if (t12) { id_t12(); *bench = 0; }
+		if (stub_jmp) { id_check(); id_stub_jmp(); *bench = 0; }
 		if (t4) {
 			id_t4();
 			*bench = 0;

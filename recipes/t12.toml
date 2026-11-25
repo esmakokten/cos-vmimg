@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 4: T12: the module single-steps the process into its gate and writes the marker at the vmcall
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "T12: the module single-steps the process into its gate and writes the marker at the vmcall"
+init        = "run_t12.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]
