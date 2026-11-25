@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 6: the 2.5 check, T4 and T7 with self-registration; the module only as the attacker. Needs the self-registration build (VMCALL_SELF_REG).
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "the 2.5 check, T4 and T7 with self-registration; the module only as the attacker"
+init        = "run_p6lockg.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

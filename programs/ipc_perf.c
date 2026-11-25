@@ -28,6 +28,7 @@
 #include <time.h>
 #include "stats.h"
 #include "errand_id_abi.h"
+#include "libErrand.h" /* Phase 6: errand_self_register, errand_self_cpuid */
 
 /* Serialized RDTSC measurements */
 static inline uint64_t rdtsc_serialized_start(void) {
@@ -254,14 +255,24 @@ id_open(void)
 	return id_fd;
 }
 
+/* Phase 6: the module, if the image has it, without complaint when it does not */
+static int
+id_open_quiet(void)
+{
+	if (id_fd < 0) id_fd = open("/dev/errand_id", O_RDWR);
+	return id_fd;
+}
+
 static unsigned long
 id_root(void)
 {
 	unsigned long root = 0;
 
-	if (id_open() >= 0 && ioctl(id_fd, ERRAND_ID_IOC_ROOT, &root)) root = 0;
+	if (id_open_quiet() >= 0 && ioctl(id_fd, ERRAND_ID_IOC_ROOT, &root)) root = 0;
 	return root;
 }
+
+static int id_self; /* Phase 6: registered itself with the cpuid leaf */
 
 /* 1,000 checked calls per slot before anything is timed: the correctness gate on the real path. */
 static int
@@ -516,7 +527,7 @@ id_t6(void)
 	unsigned char *g = (unsigned char *)gate_fn;
 
 	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
-	b = ioctl(id_fd, ERRAND_ID_IOC_T6);
+	b = id_self ? ioctl(id_fd, ERRAND_ID_IOC_T6_VA, gate_fn) : ioctl(id_fd, ERRAND_ID_IOC_T6);
 	for (i = 0; i < 10000; i++) {
 		r = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40); /* the gate is no longer callable */
 		if (r == 100) served++;
@@ -527,7 +538,10 @@ id_t6(void)
 	       getpid(), b, served, refused, other);
 	printf("ipc_perf: T6 gate page bytes 0-15 after:");
 	for (i = 0; i < 16; i++) printf(" %02x", g[i]);
-	printf("; bytes 16-4095 all 0xcc: %s\n", ({ int ok = 1; for (i = 16; i < 4096; i++) if (g[i] != 0xcc) ok = 0; ok ? "yes" : "NO"; }));
+	if (id_self) /* Phase 6: the revocation restored the process's own entry (the zero page) */
+		printf("; all 4096 bytes zero (own entry back): %s\n", ({ int ok = 1; for (i = 0; i < 4096; i++) if (g[i]) ok = 0; ok ? "yes" : "NO"; }));
+	else
+		printf("; bytes 16-4095 all 0xcc: %s\n", ({ int ok = 1; for (i = 16; i < 4096; i++) if (g[i] != 0xcc) ok = 0; ok ? "yes" : "NO"; }));
 	fflush(stdout);
 	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
 }
@@ -695,11 +709,79 @@ id_t8(void)
 	fflush(stdout);
 }
 
+/*
+ * T16 (Phase 6): who may ask. In a prepared, unregistered process, each attempt is followed by the
+ * VMM's dump (its last refusal and "pages locked now"): the leaf from ring 0; gate addresses whose
+ * leaf is writable, absent, in the upper half, or behind a 2 MiB page (the module writes that leaf:
+ * the guest has neither THP nor hugetlbfs). Then a good registration, the same root again, and
+ * 10^4 calls through the gate.
+ */
+static void
+id_t16(void)
+{
+	struct errand_id_cpuid c;
+	unsigned long          upper = 0xffffffff81000000UL, big, i, served = 0;
+	void                  *good, *w, *none, *m, *second;
+	long                   r, rp;
+
+	good = errand_self_reserve(1);
+	memset(&c, 0, sizeof(c));
+	c.op      = ERRAND_ID_SELF_REGISTER;
+	c.gate_va = (unsigned long)good;
+	r         = ioctl(id_fd, ERRAND_ID_IOC_CPUID_RING0, &c);
+	printf("ipc_perf: T16 (1) the leaf from ring 0, gate %p: ioctl %ld, answer %ld: %s\n", good, r, (long)c.eax,
+	       (long)c.eax == -ERRAND_ID_EPERM ? "refused (-EPERM)" : "NOT REFUSED");
+	fflush(stdout);
+	errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
+
+	w = mmap(0, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+	((volatile char *)w)[0] = 1;
+	r = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)w, 0);
+	printf("ipc_perf: T16 (2) a writable leaf at %p: %ld: %s\n", w, r, r == -ERRAND_ID_EINVAL ? "refused (-EINVAL)" : "NOT REFUSED");
+	fflush(stdout);
+	errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
+
+	none = mmap(0, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	r    = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)none, 0);
+	printf("ipc_perf: T16 (3) an absent leaf at %p (PROT_NONE, never populated): %ld: %s\n", none, r,
+	       r == -ERRAND_ID_EINVAL ? "refused (-EINVAL)" : "NOT REFUSED");
+	fflush(stdout);
+	errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
+
+	r = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, upper, 0);
+	printf("ipc_perf: T16 (4) the upper half, %#lx: %ld: %s\n", upper, r, r == -ERRAND_ID_EINVAL ? "refused (-EINVAL)" : "NOT REFUSED");
+	fflush(stdout);
+	errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
+
+	m   = mmap(0, 4 << 20, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	big = ((unsigned long)m + (2UL << 20) - 1) & ~((2UL << 20) - 1);
+	rp  = ioctl(id_fd, ERRAND_ID_IOC_T16_PMD, big);
+	r   = rp ? 1 : errand_self_cpuid(ERRAND_ID_SELF_REGISTER, big, 0);
+	printf("ipc_perf: T16 (5) behind a 2 MiB leaf at %#lx (module: %ld): %ld: %s\n", big, rp, r,
+	       rp ? "NOT CONSTRUCTED" : r == -ERRAND_ID_EINVAL ? "refused (-EINVAL)" : "NOT REFUSED");
+	fflush(stdout);
+	errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
+	if (!rp) printf("ipc_perf: T16 the 2 MiB leaf removed: %d\n", ioctl(id_fd, ERRAND_ID_IOC_T16_PMD, big | 1));
+
+	r = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)good, 0);
+	if (!r) {
+		gate_fn = (unsigned long)good;
+		id_self = 1;
+	}
+	second = errand_self_reserve(1);
+	rp     = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)second, 0);
+	for (i = 0; i < 10000 && gate_fn; i++) if (vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) == 100) served++;
+	printf("ipc_perf: T16 (6) a good registration at %p: %ld; the same root again at %p: %ld: %s; then 10000 calls: served %lu\n",
+	       good, r, second, rp, rp == -ERRAND_ID_EEXIST ? "refused (-EEXIST)" : "NOT REFUSED", served);
+	fflush(stdout);
+	errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
+}
+
 static int
 id_main(int argc, char **argv, int *bench)
 {
 	int i, reg = 0, unreg = 0, want12 = 0, hold = 0, locked = 0, t4 = 0, churn = 0, gate = -1, t5 = 0, t6 = 0, t8 = 0;
-	int stub_local = 0, t11_tamper = 0, t12 = 0, stub_jmp = 0;
+	int stub_local = 0, t11_tamper = 0, t12 = 0, stub_jmp = 0, no_touch = 0, t16 = 0, dump_after = 0;
 	unsigned long t11_secs = 0;
 	unsigned long ainline = 0;
 	unsigned long attempts = 0, kvm = 0, lflags = 0, heap_mb = 0, secs = 0;
@@ -721,6 +803,19 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--churn")) churn = 1;
 		else if (!strcmp(argv[i], "--no-cpuid")) id_no_cpuid = 1;
 		else if (!strcmp(argv[i], "--gate") && i + 1 < argc) gate = (int)strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--self") && i + 1 < argc) { gate = (int)strtoul(argv[++i], 0, 0); id_self = 1; }
+		else if (!strcmp(argv[i], "--no-touch")) no_touch = 1;
+		else if (!strcmp(argv[i], "--dump-after")) dump_after = 1;
+		else if (!strcmp(argv[i], "--t16")) { t16 = 1; gate = 0; id_self = 1; }
+		else if (!strcmp(argv[i], "--kernel-op") && i + 1 < argc) {
+			struct errand_id_kvmcall k = { .rax = strtoul(argv[++i], 0, 0), .count = 1 };
+
+			if (id_open() < 0) return 1;
+			r = ioctl(id_fd, ERRAND_ID_IOC_KERNEL_VMCALL, &k);
+			printf("ipc_perf: ring-0 operation %#lx from the module: answer %ld: %s\n", k.rax, (long)k.last_rax,
+			       k.n_enosys == 1 ? "-ENOSYS (removed)" : "NOT -ENOSYS");
+			*bench = 0;
+		}
 		else if (!strcmp(argv[i], "--gate-drop")) lflags |= ERRAND_ID_LOCK_DROP_ONE;
 		else if (!strcmp(argv[i], "--attempts-inline") && i + 1 < argc) ainline = strtoul(argv[++i], 0, 0);
 		else if (!strcmp(argv[i], "--t5")) t5 = 1;
@@ -734,9 +829,13 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--cpuid-cost")) { id_cpuid_cost(); *bench = 0; }
 		else if (!strcmp(argv[i], "--wake") && i + 1 < argc) { id_wake(strtoul(argv[++i], 0, 0)); *bench = 0; }
 		else if (!strcmp(argv[i], "--dump")) {
-			if (id_open() < 0) return 1;
-			r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
-			printf("ipc_perf: dump requested: %ld\n", r);
+			if (id_open_quiet() < 0) {
+				r = errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0); /* Phase 6: no module in the image */
+				printf("ipc_perf: dump requested (cpuid): %ld\n", r);
+			} else {
+				r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
+				printf("ipc_perf: dump requested: %ld\n", r);
+			}
 			*bench = 0;
 		} else if (!strcmp(argv[i], "--soak-fork") && i + 1 < argc) {
 			*bench = 0;
@@ -745,9 +844,13 @@ id_main(int argc, char **argv, int *bench)
 			*bench = 0;
 			if (soak_loop(strtoul(argv[++i], 0, 0))) return 1;
 		} else if (!strcmp(argv[i], "--counters")) {
-			if (id_open() < 0) return 1;
-			r = ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
-			printf("ipc_perf: counters requested: %ld\n", r);
+			if (id_open_quiet() < 0) {
+				r = errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0); /* Phase 6: no module; the dump holds the counters too */
+				printf("ipc_perf: counters requested (cpuid): %ld\n", r);
+			} else {
+				r = ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
+				printf("ipc_perf: counters requested: %ld\n", r);
+			}
 			*bench = 0;
 		} else {
 			printf("ipc_perf: unknown argument %s\n", argv[i]);
@@ -779,20 +882,47 @@ id_main(int argc, char **argv, int *bench)
 		unsigned long             root;
 		void                     *g = NULL;
 
-		if (id_open() < 0) return 1;
+		if (id_self) id_open_quiet(); /* Phase 6: the module, if any, is only the attacker */
+		else if (id_open() < 0) return 1;
 		root = id_root();
-		if (gate >= 0) {
+		if (gate >= 0 && !id_self) {
 			/* the gate page, mapped before the tables are walked and locked */
 			g = mmap(0, 4096, PROT_READ | PROT_EXEC, MAP_SHARED, id_fd, 0);
 			if (g == MAP_FAILED) {
 				printf("ipc_perf: gate mmap failed\n");
 				return 1;
 			}
+		}
+		if (gate >= 0) {
 			memset(t5_stack, 0, sizeof(t5_stack)); /* T5's data, present before registering */
 			t5_saved_rsp = t5_rax = 0;
 		}
 		lock_prepare(heap_mb, (*bench && !attempts && !secs && !t4 && !t5 && !t6 && !t8 && !ainline && !t11_secs && !t12) || stub_jmp);
-		if (gate >= 0) {
+		if (t16) {
+			id_t16();
+			*bench = 0;
+			return 0;
+		}
+		if (id_self) {
+			/* Phase 6 (A71, A76): this process asks the VMM itself; T9's cycles are around the cpuid alone */
+			void    *gp = errand_self_reserve(!no_touch);
+			uint64_t t0, t1;
+
+			if (!gp) {
+				printf("ipc_perf: pid %d: mlockall or the gate's mmap failed\n", getpid());
+				return 1;
+			}
+			t0 = rdtsc_serialized_start();
+			r  = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)gp, (unsigned long)gate);
+			t1 = rdtsc_serialized_end();
+			if (!r) gate_fn = (unsigned long)gp;
+			printf("ipc_perf: pid %d registered itself (cpuid) root %#lx with a gate at %p, component %d%s: %ld (%lu cycles around the cpuid)\n",
+			       getpid(), root, gp, gate, no_touch ? " (gate address never read before)" : " (gate address read before)", r,
+			       (unsigned long)(t1 - t0));
+			fflush(stdout);
+			if (!r && id_fd >= 0) ioctl(id_fd, ERRAND_ID_IOC_GATE_VA, gate_fn); /* where the attacker looks (T11, T12) */
+			if (dump_after) errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
+		} else if (gate >= 0) {
 			struct errand_id_gate_req req = { (unsigned long)g, (unsigned long)gate, lflags };
 
 			r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER_GATE, &req);
@@ -800,11 +930,13 @@ id_main(int argc, char **argv, int *bench)
 		} else {
 			r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER_LOCKED, lflags);
 		}
-		ioctl(id_fd, ERRAND_ID_IOC_LAST_REG, &st);
-		printf("ipc_perf: pid %d registered %s root %#lx%s: %ld (%lu page-table pages, %lu cycles)\n", getpid(),
-		       gate >= 0 ? "with a gate" : "locked", root, (lflags & ERRAND_ID_LOCK_NO_PRESET) ? " (no preset)" : "",
-		       r, st.pages, st.cycles);
-		fflush(stdout);
+		if (!id_self) {
+			ioctl(id_fd, ERRAND_ID_IOC_LAST_REG, &st);
+			printf("ipc_perf: pid %d registered %s root %#lx%s: %ld (%lu page-table pages, %lu cycles)\n", getpid(),
+			       gate >= 0 ? "with a gate" : "locked", root, (lflags & ERRAND_ID_LOCK_NO_PRESET) ? " (no preset)" : "",
+			       r, st.pages, st.cycles);
+			fflush(stdout);
+		}
 		if (r) return 1;
 		if (stub_local && gate < 0) gate_fn = (unsigned long)local_stub;
 		if (ainline) {
@@ -881,6 +1013,26 @@ id_exit(void)
 {
 	long r;
 
+	if (id_self) {
+		/* Phase 6: unregister with the leaf; the VMM puts the process's own entry back (the zero page) */
+		if (id_exit_registered) {
+			printf("ipc_perf: pid %d exits without unregistering\n", getpid());
+			fflush(stdout);
+			return;
+		}
+		r = errand_self_unregister();
+		printf("ipc_perf: pid %d unregistered itself: %ld\n", getpid(), r);
+		if (gate_fn) {
+			unsigned char *g = (unsigned char *)gate_fn;
+			int            i, z = 1;
+
+			for (i = 0; i < 4096; i++) if (g[i]) z = 0;
+			printf("ipc_perf: pid %d gate address after unregister: %02x %02x %02x ... all 4096 bytes zero (own entry back): %s\n",
+			       getpid(), g[0], g[1], g[2], z ? "yes" : "NO");
+		}
+		fflush(stdout);
+		return;
+	}
 	if (id_fd < 0) return;
 	if (id_exit_registered) {
 		printf("ipc_perf: pid %d exits without unregistering\n", getpid());
@@ -906,7 +1058,8 @@ int main(int argc, char **argv)
 	int bench = 1, reg = 0, i;
 
 	for (i = 1; i < argc; i++)
-		if (!strcmp(argv[i], "--register") || !strcmp(argv[i], "--register-locked") || !strcmp(argv[i], "--gate")) reg = 1;
+		if (!strcmp(argv[i], "--register") || !strcmp(argv[i], "--register-locked") || !strcmp(argv[i], "--gate")
+		    || !strcmp(argv[i], "--self") || !strcmp(argv[i], "--t16")) reg = 1;
 	if (id_main(argc, argv, &bench)) return 1;
 	if (bench) {
 		if (argc > 1 && id_check()) {
