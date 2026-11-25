@@ -151,6 +151,14 @@ vm_gate_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsig
 	return ret;
 }
 
+/*
+ * The same 12 bytes as the gate's stub, in ipc_perf's own text (3.10's split: the stub's cost
+ * without the kernel's gate check, on a kernel without VMCALL_GATE).
+ */
+void local_stub(void);
+__asm__(".text\n.globl local_stub\nlocal_stub:\n\t"
+        ".byte 0x55, 0x41, 0xbb, 0x02, 0x32, 0x00, 0x00, 0x0f, 0x01, 0xc1, 0x5d, 0xc3\n");
+
 /* Through the gate when the process registered with one, else the inline vmcall. */
 static inline unsigned long
 vm_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4)
@@ -193,6 +201,8 @@ vm_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned l
  *                     to the gate's first byte, and to the gate's vmcall, with its own registers
  *   --t6              the module writes the gate page; then 10^4 calls, and the gate's bytes read
  *   --t8              after registering, wait for /tmp/t8.peer, then 10^4 calls to each slot
+ *   --stub-local      with --register-locked: call through a copy of the gate's stub in ipc_perf's
+ *                     own text (no VMCALL_GATE needed): the stub's cost alone (3.10)
  * With no flag, ipc_perf is the T0 benchmark it always was.
  */
 static int id_fd = -1;
@@ -527,6 +537,7 @@ static int
 id_main(int argc, char **argv, int *bench)
 {
 	int i, reg = 0, unreg = 0, want12 = 0, hold = 0, locked = 0, t4 = 0, churn = 0, gate = -1, t5 = 0, t6 = 0, t8 = 0;
+	int stub_local = 0;
 	unsigned long ainline = 0;
 	unsigned long attempts = 0, kvm = 0, lflags = 0, heap_mb = 0, secs = 0;
 	long r;
@@ -552,6 +563,7 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--t5")) t5 = 1;
 		else if (!strcmp(argv[i], "--t6")) t6 = 1;
 		else if (!strcmp(argv[i], "--t8")) t8 = 1;
+		else if (!strcmp(argv[i], "--stub-local")) stub_local = 1;
 		else if (!strcmp(argv[i], "--dump")) {
 			if (id_open() < 0) return 1;
 			r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
@@ -625,6 +637,7 @@ id_main(int argc, char **argv, int *bench)
 		       r, st.pages, st.cycles);
 		fflush(stdout);
 		if (r) return 1;
+		if (stub_local && gate < 0) gate_fn = (unsigned long)local_stub;
 		if (ainline) {
 			unsigned long k, sv = 0, rf = 0, ot = 0, v;
 
