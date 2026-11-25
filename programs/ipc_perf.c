@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include "stats.h"
 #include "errand_id_abi.h"
 
@@ -131,6 +132,9 @@ vm_ipc_call(unsigned long cap_no,
  *   --hold            after the run, keep the registration until SIGTERM, then unregister
  *   --kernel-vmcall N N ring-0 vmcalls with slot 0 in rax, from the module (T2)
  *   --counters        ask the VMM to print its identity counters
+ *   --soak-fork N     Q10: N rounds of fork; the child registers, prints one line, makes 100
+ *                     checked calls, unregisters and exits (a new process and PGD each round)
+ *   --soak-loop N     Q10: one process, N rounds of register, 100 checked calls, unregister
  * With no flag, ipc_perf is the T0 benchmark it always was.
  */
 static int id_fd = -1;
@@ -185,6 +189,63 @@ id_attempts(unsigned long n)
 	       getpid(), id_root(), n, served, refused, other, (long)last);
 }
 
+/* One soak round: register, 100 checked calls to slot 0, unregister. Returns 0 when all of it held. */
+static int
+soak_round(int print, unsigned long round)
+{
+	long r, u;
+	int  i, bad = 0;
+
+	r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER);
+	if (print) {
+		printf("soak %lu pid %d root %#lx register %ld\n", round, getpid(), id_root(), r);
+		fflush(stdout);
+	}
+	if (r) return 1;
+	for (i = 0; i < 100; i++) {
+		if (vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) != 100) bad++;
+	}
+	u = ioctl(id_fd, ERRAND_ID_IOC_UNREGISTER);
+	return bad || u;
+}
+
+static int
+soak_fork(unsigned long n)
+{
+	unsigned long i, ok = 0, fail = 0;
+
+	for (i = 0; i < n; i++) {
+		pid_t pid = fork();
+		int   st;
+
+		if (pid == 0) {
+			id_fd = -1; /* the child opens its own file */
+			if (id_open() < 0) _exit(2);
+			_exit(soak_round(1, i));
+		}
+		if (pid < 0 || waitpid(pid, &st, 0) != pid || !WIFEXITED(st) || WEXITSTATUS(st)) fail++;
+		else ok++;
+	}
+	printf("ipc_perf: soak-fork done: %lu rounds, ok %lu, fail %lu\n", n, ok, fail);
+	fflush(stdout);
+	return fail != 0;
+}
+
+static int
+soak_loop(unsigned long n)
+{
+	unsigned long i, ok = 0, fail = 0;
+
+	if (id_open() < 0) return 1;
+	for (i = 0; i < n; i++) {
+		if (soak_round(0, i)) fail++;
+		else ok++;
+	}
+	printf("ipc_perf: soak-loop done: %lu rounds, ok %lu, fail %lu\n", n, ok, fail);
+	fflush(stdout);
+	return fail != 0;
+}
+
 static int
 id_main(int argc, char **argv, int *bench)
 {
@@ -199,7 +260,13 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--hold")) hold = 1;
 		else if (!strcmp(argv[i], "--attempts") && i + 1 < argc) attempts = strtoul(argv[++i], 0, 0);
 		else if (!strcmp(argv[i], "--kernel-vmcall") && i + 1 < argc) kvm = strtoul(argv[++i], 0, 0);
-		else if (!strcmp(argv[i], "--counters")) {
+		else if (!strcmp(argv[i], "--soak-fork") && i + 1 < argc) {
+			*bench = 0;
+			if (soak_fork(strtoul(argv[++i], 0, 0))) return 1;
+		} else if (!strcmp(argv[i], "--soak-loop") && i + 1 < argc) {
+			*bench = 0;
+			if (soak_loop(strtoul(argv[++i], 0, 0))) return 1;
+		} else if (!strcmp(argv[i], "--counters")) {
 			if (id_open() < 0) return 1;
 			r = ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
 			printf("ipc_perf: counters requested: %ld\n", r);

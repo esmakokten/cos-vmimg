@@ -1,0 +1,7 @@
+# w11_vmcall_identity Q10: the registration soak. Needs a Composite system built with
+# VMCALL_IDENTITY and VMCALL_RESUME_RIP3 on (and VMM_HEARTBEAT for the host-side heartbeat).
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "identity Q10: registration soak, fork 2000 rounds then loop 20000 rounds"
+init        = "run_soak.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]
