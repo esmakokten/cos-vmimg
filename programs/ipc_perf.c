@@ -307,14 +307,15 @@ lock_prepare(unsigned long heap_mb, int bench)
 
 		mallopt(M_MMAP_THRESHOLD, 64 << 20);
 		mallopt(M_TRIM_THRESHOLD, -1);
-		if ((grow = malloc(2 << 20))) {
-			memset(grow, 0, 2 << 20);
-			free(grow);
-		}
 		bench_pre0 = aligned_alloc(64, 100000 * sizeof(uint64_t));
 		bench_pre1 = aligned_alloc(64, 100000 * sizeof(uint64_t));
 		if (bench_pre0) memset(bench_pre0, 0, 100000 * sizeof(uint64_t));
 		if (bench_pre1) memset(bench_pre1, 0, 100000 * sizeof(uint64_t));
+		/* after the buffers, so the freed block stays free for qsort */
+		if ((grow = malloc(4 << 20))) {
+			memset(grow, 0, 4 << 20);
+			free(grow);
+		}
 	}
 	clock_gettime(CLOCK_MONOTONIC, &ts); /* the vDSO data page */
 	pin_cpu0();
