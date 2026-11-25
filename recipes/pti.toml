@@ -1,0 +1,7 @@
+# w11_vmcall_identity Phase 2 (2.10): T2 and the locked registration on a PTI-on 5.15.107 guest.
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "PTI on: Phase 1 T2 and the Phase 2 locked-registration check"
+init        = "run_pti.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]
+fragment    = "pti.config"

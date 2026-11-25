@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 2b: H2, the guest-tick check
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "H2: 20 s of fast-path calls with no cpuid; guest jiffies and timer interrupts before and after"
+init        = "run_h2.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

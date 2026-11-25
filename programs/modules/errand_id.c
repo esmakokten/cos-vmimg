@@ -95,7 +95,20 @@ lock_walk(struct mm_struct *mm, int preset)
 		/* 4-level paging: the P4D is folded into the PGD, and pgd_none()/pgd_bad() are constant 0 */
 		p4d = p4d_offset(pgd, a);
 		if (p4d_none(*p4d) || p4d_bad(*p4d)) continue;
-		if (preset && !(p4d_val(*p4d) & _PAGE_ACCESSED)) set_p4d(p4d, __p4d(p4d_val(*p4d) | _PAGE_ACCESSED));
+		if (preset && !(pgd_val(*pgd) & _PAGE_ACCESSED)) {
+			/*
+			 * Not set_p4d(): under PTI it calls __pti_set_user_pgtbl, which modules cannot
+			 * reach. Write the entry, and under PTI the user PGD's copy too (ring 3 walks it).
+			 */
+			WRITE_ONCE(*pgd, __pgd(pgd_val(*pgd) | _PAGE_ACCESSED));
+#ifdef CONFIG_PAGE_TABLE_ISOLATION
+			if (boot_cpu_has(X86_FEATURE_PTI)) {
+				pgd_t *u = kernel_to_user_pgdp(pgd);
+
+				WRITE_ONCE(*u, __pgd(pgd_val(*u) | _PAGE_ACCESSED));
+			}
+#endif
+		}
 		pud = pud_offset(p4d, a);
 		if ((ret = lock_add(__pa(pud)))) return ret;
 		for (ui = 0; ui < PTRS_PER_PUD; ui++, pud++) {

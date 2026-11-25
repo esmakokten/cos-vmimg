@@ -23,6 +23,7 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <sys/prctl.h>
+#include <malloc.h>
 #include <time.h>
 #include "stats.h"
 #include "errand_id_abi.h"
@@ -297,6 +298,19 @@ lock_prepare(unsigned long heap_mb, int bench)
 		if (h) memset(h, 1, heap_mb << 20);
 	}
 	if (bench) {
+		/*
+		 * glibc's qsort takes a merge buffer the size of the array (800 KB) from malloc, which
+		 * would mmap it after registration and revoke P (T1-locked run 1: a write in
+		 * __handle_mm_fault). Keep large blocks on the heap, never trim it, and grow it now.
+		 */
+		void *grow;
+
+		mallopt(M_MMAP_THRESHOLD, 64 << 20);
+		mallopt(M_TRIM_THRESHOLD, -1);
+		if ((grow = malloc(2 << 20))) {
+			memset(grow, 0, 2 << 20);
+			free(grow);
+		}
 		bench_pre0 = aligned_alloc(64, 100000 * sizeof(uint64_t));
 		bench_pre1 = aligned_alloc(64, 100000 * sizeof(uint64_t));
 		if (bench_pre0) memset(bench_pre0, 0, 100000 * sizeof(uint64_t));
