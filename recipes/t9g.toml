@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 3: T9 with the walk and the gate (registration cycles vs page-table pages). Needs the gate build.
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "T9 with the gate: P as built, +32 MiB, +128 MiB, five registrations each"
+init        = "run_t9g.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]
