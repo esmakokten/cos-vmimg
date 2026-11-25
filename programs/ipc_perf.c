@@ -302,6 +302,14 @@ id_seconds(unsigned long secs)
 		else if ((long)last == -1) refused++;
 		else other++;
 		if ((++n & 0xfff) == 0) {
+			unsigned int a = 0, b, c = 0, d;
+
+			/*
+			 * One slow exit per 4,096 calls: the guest's timer is injected only at a slow-path
+			 * entry, so a loop of fast-path calls alone starves the guest's clock (T3 run 1, an
+			 * RCU stall and a hang; BUGS.md). The benchmark's own cpuid does the same.
+			 */
+			__asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
 			clock_gettime(CLOCK_MONOTONIC, &t);
 			if ((unsigned long)(t.tv_sec - t0.tv_sec) >= secs) break;
 		}
