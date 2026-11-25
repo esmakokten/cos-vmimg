@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 3: the gate (3.2, 3.4, T2-gate, T5, T6, T8). Needs the gate build.
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "Phase 3: walk refusal, gate check, T2-gate, T5, T6, T8"
+init        = "run_gate1.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

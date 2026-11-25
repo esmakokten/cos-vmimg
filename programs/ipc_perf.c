@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <sys/prctl.h>
 #include <malloc.h>
 #include <time.h>
@@ -127,6 +128,37 @@ vm_ipc_call(unsigned long cap_no,
 }
 
 /*
+ * w11 Phase 3: the call through the gate (DECISIONS A32 to A34). The gate is one page of
+ * /dev/errand_id mapped read+exec; the VMM writes the stub into it at registration. The registers
+ * are the inline wrapper's; the stub saves rbp, loads r11, executes the gate's one vmcall and
+ * returns. The 128-byte red zone below rsp is skipped, because call pushes into it.
+ */
+static unsigned long gate_fn; /* the gate's address once registered through it; 0 = inline vmcall */
+
+static inline unsigned long
+vm_gate_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4)
+{
+	unsigned long ret;
+	long          fault;
+
+	__asm__ __volatile__("subq $128, %%rsp\n\t"
+	                     "callq *%[g]\n\t"
+	                     "addq $128, %%rsp\n\t"
+	                     : "=a"(ret), "=c"(fault), "+b"(arg1), "+S"(arg2), "+D"(arg3), "+d"(arg4)
+	                     : "a"(cap_no), "c"(0), [g] "m"(gate_fn)
+	                     : "memory", "cc", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15");
+	(void)fault;
+	return ret;
+}
+
+/* Through the gate when the process registered with one, else the inline vmcall. */
+static inline unsigned long
+vm_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4)
+{
+	return gate_fn ? vm_gate_call(cap_no, arg1, arg2, arg3, arg4) : vm_ipc_call(cap_no, arg1, arg2, arg3, arg4);
+}
+
+/*
  * w11 (identity): who may make the vmcall.
  *   --register        open /dev/errand_id and register this process before running
  *   --no-register     run unregistered (the process Q); prints its root
@@ -152,6 +184,15 @@ vm_ipc_call(unsigned long cap_no,
  *   --exit-registered exit without unregistering (T7)
  *   --churn           forever: map 16 MiB, touch it, unmap it (T3's background load)
  *   --dump            ask the VMM to print its page-table-lock counters
+ * Phase 3 (the gate):
+ *   --gate C          register locked with a gate page, component C (0: slots 0+1, 1: slot 0, 2: slot 1);
+ *                     every call then goes through the gate
+ *   --gate-drop       with --gate: the module leaves one lower table out of the list (3.2: refused)
+ *   --attempts-inline N  N slot-0 calls with the old inline vmcall, outside the gate (T2-gate)
+ *   --t5              the faked calls: the module returns this thread to a vmcall outside the gate,
+ *                     to the gate's first byte, and to the gate's vmcall, with its own registers
+ *   --t6              the module writes the gate page; then 10^4 calls, and the gate's bytes read
+ *   --t8              after registering, wait for /tmp/t8.peer, then 10^4 calls to each slot
  * With no flag, ipc_perf is the T0 benchmark it always was.
  */
 static int id_fd = -1;
@@ -202,8 +243,8 @@ id_check(void)
 	int i, bad0 = 0, bad1 = 0;
 
 	for (i = 0; i < 1000; i++) {
-		if (vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) != 100) bad0++;
-		if (vm_ipc_call(VM_IPC_CAP_ENCODE(1), 42, 100, 5, 7) != 12) bad1++;
+		if (vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) != 100) bad0++;
+		if (vm_call(VM_IPC_CAP_ENCODE(1), 42, 100, 5, 7) != 12) bad1++;
 	}
 	printf("ipc_perf: check 1000 calls per slot: slot 0 bad %d, slot 1 bad %d: %s\n",
 	       bad0, bad1, (bad0 || bad1) ? "CHECK FAILED" : "CHECK PASSED");
@@ -216,7 +257,7 @@ id_attempts(unsigned long n)
 	unsigned long i, served = 0, refused = 0, other = 0, last = 0;
 
 	for (i = 0; i < n; i++) {
-		last = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+		last = vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
 		if (last == 100) served++;
 		else if ((long)last == -1 /* -EPERM */) refused++;
 		else other++;
@@ -239,7 +280,7 @@ soak_round(int print, unsigned long round)
 	}
 	if (r) return 1;
 	for (i = 0; i < 100; i++) {
-		if (vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) != 100) bad++;
+		if (vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) != 100) bad++;
 	}
 	u = ioctl(id_fd, ERRAND_ID_IOC_UNREGISTER);
 	return bad || u;
@@ -334,7 +375,7 @@ id_seconds(unsigned long secs)
 
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	for (;;) {
-		last = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+		last = vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
 		if (last == 100) served++;
 		else if ((long)last == -1) refused++;
 		else other++;
@@ -367,7 +408,7 @@ id_t4(void)
 
 	ret = ioctl(id_fd, ERRAND_ID_IOC_T4_REWRITE, va);
 	for (i = 0; i < 10000; i++) {
-		r = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+		r = vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
 		if (r == 100) served++;
 		else if ((long)r == -1) refused++;
 		else other++;
@@ -377,10 +418,116 @@ id_t4(void)
 	printf("ipc_perf: T4 restore: %d\n", ioctl(id_fd, ERRAND_ID_IOC_T4_REWRITE, va | 1));
 }
 
+/*
+ * T5 harness. t5_run(fd, arg) saves the callee-saved registers and rsp, then issues the T5 ioctl
+ * by a raw syscall; the module makes the thread return to user mode at arg->rip with its own
+ * registers. Every target ends at t5_return, which records rax and restores the saved context.
+ */
+unsigned long t5_saved_rsp, t5_rax;
+unsigned long t5_stack[64] __attribute__((aligned(64)));
+long t5_run(long fd, struct errand_id_t5 *arg);
+void t5_outside(void);
+void t5_return(void);
+__asm__(".text\n"
+        ".globl t5_outside\n"
+        "t5_outside:\n\t"
+        "vmcall\n\t"                 /* (a): a vmcall that is not the gate's */
+        "nop; nop; nop\n\t"
+        "jmp t5_return\n"
+        ".globl t5_return\n"
+        "t5_return:\n\t"
+        "movq %rax, t5_rax(%rip)\n\t"
+        "movq t5_saved_rsp(%rip), %rsp\n\t"
+        "popq %r15\n\tpopq %r14\n\tpopq %r13\n\tpopq %r12\n\tpopq %rbp\n\tpopq %rbx\n\t"
+        "movq t5_rax(%rip), %rax\n\t"
+        "ret\n"
+        ".globl t5_run\n"
+        "t5_run:\n\t"
+        "pushq %rbx\n\tpushq %rbp\n\tpushq %r12\n\tpushq %r13\n\tpushq %r14\n\tpushq %r15\n\t"
+        "movq %rsp, t5_saved_rsp(%rip)\n\t"
+        "movq %rsi, %rdx\n\t"
+        "movl $0xE1D0000B, %esi\n\t"
+        "movl $16, %eax\n\t"          /* SYS_ioctl; rdi = fd */
+        "syscall\n\t"
+        "jmp t5_return\n");
+
+static void
+id_t5(void)
+{
+	struct errand_id_t5 t;
+	const char         *what[3] = { "(a) a vmcall outside the gate", "(b) the gate's first instruction",
+	                                "(c) the gate's vmcall instruction" };
+	int                 k;
+
+	for (k = 0; k < 3; k++) {
+		long r;
+
+		memset(t5_stack, 0, sizeof(t5_stack));
+		t.rax = VM_IPC_CAP_ENCODE(0);
+		t.rcx = 0;
+		t.rbx = 1000;
+		t.rsi = 2000;
+		t.rdi = 3000;
+		t.rdx = 4000;
+		t.rsp = (unsigned long)&t5_stack[32];
+		if (k == 0) t.rip = (unsigned long)t5_outside;
+		if (k == 1) { t.rip = gate_fn; t5_stack[32] = (unsigned long)t5_return; }
+		if (k == 2) { t.rip = gate_fn + ERRAND_ID_GATE_VMCALL_OFF; t5_stack[33] = (unsigned long)t5_return; }
+		r = t5_run(id_fd, &t);
+		printf("ipc_perf: T5 %s with the module's arguments 1000, 2000, 3000, 4000: rax %ld (%s)\n", what[k], r,
+		       r == 10000 ? "SERVED: the service saw the module's arguments" : r == -1 ? "refused" : "other");
+		fflush(stdout);
+		ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
+	}
+}
+
+static void
+id_t6(void)
+{
+	unsigned long i, served = 0, refused = 0, other = 0, r;
+	long          b;
+	unsigned char *g = (unsigned char *)gate_fn;
+
+	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
+	b = ioctl(id_fd, ERRAND_ID_IOC_T6);
+	for (i = 0; i < 10000; i++) {
+		r = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40); /* the gate is no longer callable */
+		if (r == 100) served++;
+		else if ((long)r == -1) refused++;
+		else other++;
+	}
+	printf("ipc_perf: T6 pid %d: module write to the gate page: %#lx; then 10000 calls: served %lu, refused %lu, other %lu\n",
+	       getpid(), b, served, refused, other);
+	printf("ipc_perf: T6 gate page bytes 0-15 after:");
+	for (i = 0; i < 16; i++) printf(" %02x", g[i]);
+	printf("; bytes 16-4095 all 0xcc: %s\n", ({ int ok = 1; for (i = 16; i < 4096; i++) if (g[i] != 0xcc) ok = 0; ok ? "yes" : "NO"; }));
+	fflush(stdout);
+	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS);
+}
+
+static void
+id_t8(void)
+{
+	struct stat   st;
+	unsigned long i, s0 = 0, s1 = 0;
+	int           fd = open("/tmp/t8.ready", O_WRONLY | O_CREAT | O_APPEND, 0644), n = 0;
+
+	if (fd >= 0) { if (write(fd, "x", 1) < 0) {} close(fd); }
+	while ((stat("/tmp/t8.ready", &st) || st.st_size < 2) && n++ < 600) usleep(100000); /* both registered */
+	for (i = 0; i < 10000; i++) {
+		if (vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) == 100) s0++;
+		if (vm_call(VM_IPC_CAP_ENCODE(1), 42, 100, 5, 7) == 12) s1++;
+	}
+	printf("ipc_perf: T8 pid %d: both registered (%lu bytes): slot 0 served %lu of 10000, slot 1 served %lu of 10000\n",
+	       getpid(), (unsigned long)st.st_size, s0, s1);
+	fflush(stdout);
+}
+
 static int
 id_main(int argc, char **argv, int *bench)
 {
-	int i, reg = 0, unreg = 0, want12 = 0, hold = 0, locked = 0, t4 = 0, churn = 0;
+	int i, reg = 0, unreg = 0, want12 = 0, hold = 0, locked = 0, t4 = 0, churn = 0, gate = -1, t5 = 0, t6 = 0, t8 = 0;
+	unsigned long ainline = 0;
 	unsigned long attempts = 0, kvm = 0, lflags = 0, heap_mb = 0, secs = 0;
 	long r;
 
@@ -399,6 +546,12 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--exit-registered")) id_exit_registered = 1;
 		else if (!strcmp(argv[i], "--churn")) churn = 1;
 		else if (!strcmp(argv[i], "--no-cpuid")) id_no_cpuid = 1;
+		else if (!strcmp(argv[i], "--gate") && i + 1 < argc) gate = (int)strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--gate-drop")) lflags |= ERRAND_ID_LOCK_DROP_ONE;
+		else if (!strcmp(argv[i], "--attempts-inline") && i + 1 < argc) ainline = strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--t5")) t5 = 1;
+		else if (!strcmp(argv[i], "--t6")) t6 = 1;
+		else if (!strcmp(argv[i], "--t8")) t8 = 1;
 		else if (!strcmp(argv[i], "--dump")) {
 			if (id_open() < 0) return 1;
 			r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
@@ -440,19 +593,54 @@ id_main(int argc, char **argv, int *bench)
 			}
 		}
 	}
-	if (locked) {
+	if (locked || gate >= 0) {
 		struct errand_id_reg_stat st = { 0 };
 		unsigned long             root;
+		void                     *g = NULL;
 
 		if (id_open() < 0) return 1;
 		root = id_root();
-		lock_prepare(heap_mb, *bench && !attempts && !secs && !t4);
-		r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER_LOCKED, lflags);
+		if (gate >= 0) {
+			/* the gate page, mapped before the tables are walked and locked */
+			g = mmap(0, 4096, PROT_READ | PROT_EXEC, MAP_SHARED, id_fd, 0);
+			if (g == MAP_FAILED) {
+				printf("ipc_perf: gate mmap failed\n");
+				return 1;
+			}
+			memset(t5_stack, 0, sizeof(t5_stack)); /* T5's data, present before registering */
+			t5_saved_rsp = t5_rax = 0;
+		}
+		lock_prepare(heap_mb, *bench && !attempts && !secs && !t4 && !t5 && !t6 && !t8 && !ainline);
+		if (gate >= 0) {
+			struct errand_id_gate_req req = { (unsigned long)g, (unsigned long)gate, lflags };
+
+			r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER_GATE, &req);
+			if (!r) gate_fn = (unsigned long)g;
+		} else {
+			r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER_LOCKED, lflags);
+		}
 		ioctl(id_fd, ERRAND_ID_IOC_LAST_REG, &st);
-		printf("ipc_perf: pid %d registered locked root %#lx%s: %ld (%lu page-table pages, %lu cycles)\n", getpid(),
-		       root, (lflags & ERRAND_ID_LOCK_NO_PRESET) ? " (no preset)" : "", r, st.pages, st.cycles);
+		printf("ipc_perf: pid %d registered %s root %#lx%s: %ld (%lu page-table pages, %lu cycles)\n", getpid(),
+		       gate >= 0 ? "with a gate" : "locked", root, (lflags & ERRAND_ID_LOCK_NO_PRESET) ? " (no preset)" : "",
+		       r, st.pages, st.cycles);
 		fflush(stdout);
 		if (r) return 1;
+		if (ainline) {
+			unsigned long k, sv = 0, rf = 0, ot = 0, v;
+
+			for (k = 0; k < ainline; k++) {
+				v = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+				if (v == 100) sv++;
+				else if ((long)v == -1) rf++;
+				else ot++;
+			}
+			printf("ipc_perf: inline (outside the gate) pid %d: %lu calls, served %lu, refused %lu, other %lu\n", getpid(),
+			       ainline, sv, rf, ot);
+			*bench = 0;
+		}
+		if (t5) { id_t5(); *bench = 0; }
+		if (t6) { id_t6(); *bench = 0; }
+		if (t8) { id_t8(); *bench = 0; }
 		if (t4) {
 			id_t4();
 			*bench = 0;
@@ -516,6 +704,14 @@ id_exit(void)
 	}
 	r = ioctl(id_fd, ERRAND_ID_IOC_UNREGISTER);
 	printf("ipc_perf: pid %d unregistered: %ld\n", getpid(), r);
+	if (gate_fn) {
+		unsigned char *g = (unsigned char *)gate_fn;
+		int            i, cc = 1;
+
+		for (i = 0; i < 4096; i++) if (g[i] != 0xcc) cc = 0;
+		printf("ipc_perf: pid %d gate page after unregister: %02x %02x %02x ... all 4096 bytes 0xcc: %s\n", getpid(),
+		       g[0], g[1], g[2], cc ? "yes" : "NO");
+	}
 }
 
 static void ipc_perf_bench(void);
@@ -524,7 +720,8 @@ int main(int argc, char **argv)
 {
 	int bench = 1, reg = 0, i;
 
-	for (i = 1; i < argc; i++) if (!strcmp(argv[i], "--register") || !strcmp(argv[i], "--register-locked")) reg = 1;
+	for (i = 1; i < argc; i++)
+		if (!strcmp(argv[i], "--register") || !strcmp(argv[i], "--register-locked") || !strcmp(argv[i], "--gate")) reg = 1;
 	if (id_main(argc, argv, &bench)) return 1;
 	if (bench) {
 		if (argc > 1 && id_check()) {
@@ -577,7 +774,7 @@ static void ipc_perf_bench(void)
 	/* Benchmark Slot 0: pong_args - simple 4-argument function */
 	for (int i = 0; i < N; i++) {
 		uint64_t t0 = rdtsc_serialized_start();
-		ret0 = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+		ret0 = vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
 		uint64_t t1 = rdtsc_serialized_end();
 		stats_add_sample(&stats_slot0, t1 - t0);
 	}
@@ -593,7 +790,7 @@ static void ipc_perf_bench(void)
 	/* Benchmark Slot 1: pong_argsrets - function with multiple return values */
 	for (int i = 0; i < N; i++) {
 		uint64_t t0 = rdtsc_serialized_start();
-		ret0 = vm_ipc_call(VM_IPC_CAP_ENCODE(1), 42, 100, 5, 7);
+		ret0 = vm_call(VM_IPC_CAP_ENCODE(1), 42, 100, 5, 7);
 		uint64_t t1 = rdtsc_serialized_end();
 		stats_add_sample(&stats_slot1, t1 - t0);
 	}

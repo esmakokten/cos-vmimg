@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 3 (3.10): T1 through the gate. Needs the gate build.
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "T1-gate: checked calls and the benchmark through the gate"
+init        = "run_t1g.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

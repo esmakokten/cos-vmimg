@@ -25,6 +25,7 @@
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
+#include <linux/sched/task_stack.h>
 #include <linux/uaccess.h>
 #include <asm/cpufeature.h>
 #include <asm/page.h>
@@ -176,6 +177,117 @@ errand_id_register_locked(unsigned long flags)
 }
 
 /*
+ * Phase 3: the gate (DECISIONS A32). The process maps /dev/errand_id, one page, read and execute
+ * only; the module donates a zeroed page per open file and maps it at once. REGISTER_GATE walks the
+ * tables as REGISTER_LOCKED does and sends the gate's address and page with the list; the VMM
+ * writes the stub into the page.
+ */
+static struct errand_id_gate_page *gate_regpage;
+
+static int
+errand_id_open(struct inode *inode, struct file *f)
+{
+	f->private_data = NULL;
+	return 0;
+}
+
+static int
+errand_id_release(struct inode *inode, struct file *f)
+{
+	if (f->private_data) __free_page((struct page *)f->private_data);
+	return 0;
+}
+
+static int
+errand_id_mmap(struct file *f, struct vm_area_struct *vma)
+{
+	struct page *pg = f->private_data;
+
+	if (vma->vm_end - vma->vm_start != PAGE_SIZE || (vma->vm_flags & VM_WRITE)) return -EINVAL;
+	if (!pg) {
+		if (!(pg = alloc_page(GFP_KERNEL | __GFP_ZERO))) return -ENOMEM;
+		f->private_data = pg;
+	}
+	vma->vm_flags &= ~VM_MAYWRITE;
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	return remap_pfn_range(vma, vma->vm_start, page_to_pfn(pg), PAGE_SIZE, vma->vm_page_prot);
+}
+
+static long
+errand_id_register_gate(struct file *f, unsigned long uarg)
+{
+	struct mm_struct         *mm = current->mm;
+	struct errand_id_gate_req req;
+	struct page              *pg = f->private_data;
+	unsigned long             roots[2], t0, t1, i;
+	long                      ret;
+	int                       n;
+
+	if (copy_from_user(&req, (void __user *)uarg, sizeof(req))) return -EFAULT;
+	n = errand_id_roots(roots);
+	if (!n || !lock_page || !gate_regpage || !pg) return -EINVAL;
+	mmap_write_lock(mm);
+	lock_page->count = 0;
+	ret = lock_walk(mm, !(req.flags & ERRAND_ID_LOCK_NO_PRESET));
+	preempt_disable(); __flush_tlb_all(); preempt_enable(); /* flush_tlb_mm is not available to modules; one vCPU */
+	mmap_write_unlock(mm);
+	if (ret) return ret == -ENOSPC ? -ENOMEM : ret;
+	if (lock_page->count > ERRAND_ID_GATE_MAX) return -ENOMEM;
+	gate_regpage->count    = lock_page->count;
+	gate_regpage->comp     = req.comp;
+	gate_regpage->gate_va  = req.gate_va;
+	gate_regpage->gate_gpa = page_to_phys(pg);
+	for (i = 0; i < lock_page->count; i++) gate_regpage->gpa[i] = lock_page->gpa[i];
+	if (req.flags & ERRAND_ID_LOCK_DROP_ONE && gate_regpage->count > 2) {
+		gate_regpage->count--; /* 3.2's test: the last lower table is left out */
+		pr_info("errand_id: register-gate test: page %#lx left out of the list\n",
+		        gate_regpage->gpa[gate_regpage->count]);
+	}
+	t0  = rdtsc_ordered();
+	ret = errand_id_vmcall3(ERRAND_ID_OP_REGISTER_GATE, roots[0], n > 1 ? roots[1] : 0, __pa(gate_regpage));
+	t1  = rdtsc_ordered();
+	last_reg.pages  = gate_regpage->count;
+	last_reg.cycles = t1 - t0;
+	last_reg.ret    = ret;
+	pr_info("errand_id: register-gate root %#lx (pid %d): gate %#lx page %#lx component %lu, %lu page-table pages, %lu cycles: %ld\n",
+	        roots[0], current->pid, req.gate_va, (unsigned long)page_to_phys(pg), req.comp, gate_regpage->count,
+	        t1 - t0, ret);
+	return ret;
+}
+
+/* T5: the calling thread returns to user mode at t.rip with the module's registers (rax as the return). */
+static long
+errand_id_t5(unsigned long uarg)
+{
+	struct errand_id_t5 t;
+	struct pt_regs     *r = task_pt_regs(current);
+
+	if (copy_from_user(&t, (void __user *)uarg, sizeof(t))) return -EFAULT;
+	r->ip = t.rip;
+	r->sp = t.rsp;
+	r->bx = t.rbx;
+	r->cx = t.rcx;
+	r->dx = t.rdx;
+	r->si = t.rsi;
+	r->di = t.rdi;
+	return (long)t.rax; /* the syscall return writes this into rax */
+}
+
+/* T6: one byte written to the gate page through the kernel's direct map. */
+static long
+errand_id_t6(struct file *f)
+{
+	struct page   *pg = f->private_data;
+	unsigned char *b;
+
+	if (!pg) return -EINVAL;
+	b = page_address(pg);
+	pr_info("errand_id: T6 writing the gate page %#lx through the direct map\n", (unsigned long)page_to_phys(pg));
+	WRITE_ONCE(b[0], 0x90);
+	return b[0] | (b[1] << 8);
+}
+
+/*
  * T4: rewrite current's leaf entry for user address `va` to point at a module page holding a copy
  * of the same bytes (so the process keeps running), as a compromised kernel would. On a locked
  * process the set_pte is the first write to a locked page. `va | 1` puts the original entry back.
@@ -277,6 +389,15 @@ errand_id_kernel_vmcall(unsigned long uarg)
 static long
 errand_id_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
+	switch ((unsigned long)cmd) {
+	case ERRAND_ID_IOC_REGISTER_GATE:
+		return errand_id_register_gate(f, arg);
+	case ERRAND_ID_IOC_T5:
+		return errand_id_t5(arg);
+	case ERRAND_ID_IOC_T6:
+		return errand_id_t6(f);
+	}
+
 	unsigned long roots[2];
 
 	switch ((unsigned long)cmd) {
@@ -307,6 +428,9 @@ errand_id_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 static const struct file_operations errand_id_fops = {
 	.owner          = THIS_MODULE,
 	.unlocked_ioctl = errand_id_ioctl,
+	.open           = errand_id_open,
+	.release        = errand_id_release,
+	.mmap           = errand_id_mmap,
 	.llseek         = noop_llseek,
 };
 
@@ -322,8 +446,9 @@ errand_id_init(void)
 {
 	int ret;
 
-	lock_page = (struct errand_id_lock_page *)get_zeroed_page(GFP_KERNEL);
-	if (!lock_page) return -ENOMEM;
+	lock_page    = (struct errand_id_lock_page *)get_zeroed_page(GFP_KERNEL);
+	gate_regpage = (struct errand_id_gate_page *)get_zeroed_page(GFP_KERNEL);
+	if (!lock_page || !gate_regpage) return -ENOMEM;
 	ret = misc_register(&errand_id_dev);
 
 	if (ret) {
@@ -339,6 +464,7 @@ errand_id_exit(void)
 {
 	misc_deregister(&errand_id_dev);
 	free_page((unsigned long)lock_page);
+	free_page((unsigned long)gate_regpage);
 }
 
 module_init(errand_id_init);
