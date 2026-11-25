@@ -201,6 +201,11 @@ vm_call(unsigned long cap_no, unsigned long arg1, unsigned long arg2, unsigned l
  *                     to the gate's first byte, and to the gate's vmcall, with its own registers
  *   --t6              the module writes the gate page; then 10^4 calls, and the gate's bytes read
  *   --t8              after registering, wait for /tmp/t8.peer, then 10^4 calls to each slot
+ * Phase 4 (an interrupt inside the gate):
+ *   --t11 N           after registering with a gate: N seconds of gate calls with a changing first
+ *                     argument, every result checked; the module's 1 kHz timer counts what it sees
+ *   --t11-tamper      with --t11: the module also writes a marker into the frame (T11)
+ *   --cpuid-cost      the median of 100,000 timed user-mode cpuid round trips (4.8)
  *   --stub-local      with --register-locked: call through a copy of the gate's stub in ipc_perf's
  *                     own text (no VMCALL_GATE needed): the stub's cost alone (3.10)
  * With no flag, ipc_perf is the T0 benchmark it always was.
@@ -516,6 +521,71 @@ id_t6(void)
 }
 
 static void
+id_t11(unsigned long secs, int tamper)
+{
+	struct errand_id_t11 a;
+	struct timespec      t0, t;
+	unsigned long        n = 0, ok = 0, marked = 0, mismatch = 0, refused = 0, v, x;
+
+	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS); /* pong before */
+	memset(&a, 0, sizeof(a));
+	a.mode = ERRAND_ID_T11_COUNT | (tamper ? ERRAND_ID_T11_TAMPER : 0);
+	if (ioctl(id_fd, ERRAND_ID_IOC_T11, &a)) printf("ipc_perf: T11 arm failed\n");
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (;;) {
+		x = (n & 0xffffff) + 1;
+		v = vm_call(VM_IPC_CAP_ENCODE(0), x, 0, 0, 0); /* pong_args: the sum of its arguments */
+		n++;
+		if (v == x) ok++;
+		else if ((long)v == -1) refused++;
+		else if (v >= ERRAND_ID_T11_MARK && v < ERRAND_ID_T11_MARK + 0x1000000UL) marked++;
+		else mismatch++;
+		if ((n & 0xfff) == 0) {
+			clock_gettime(CLOCK_MONOTONIC, &t);
+			if ((unsigned long)(t.tv_sec - t0.tv_sec) >= secs) break;
+		}
+	}
+	a.mode = 0;
+	ioctl(id_fd, ERRAND_ID_IOC_T11, &a);
+	printf("ipc_perf: T11 pid %d %s %lu s: %lu calls: right result %lu, served WITH THE MARKER %lu, other mismatch %lu, refused %lu\n",
+	       getpid(), tamper ? "tamper" : "count", secs, n, ok, marked, mismatch, refused);
+	printf("ipc_perf: T11 module: timer %lu, frames of this process in user mode %lu; in the gate by offset 0/1/7/10/11/16/other "
+	       "%lu/%lu/%lu/%lu/%lu/%lu/%lu; blank %lu, not blank %lu (of which only the module's own marker %lu); tampered %lu\n",
+	       a.ticks, a.frames, a.in_gate[0], a.in_gate[1], a.in_gate[2], a.in_gate[3], a.in_gate[4], a.in_gate[5],
+	       a.in_gate[6], a.blank, a.nonblank, a.nonblank_own, a.tampered);
+	fflush(stdout);
+	ioctl(id_fd, ERRAND_ID_IOC_COUNTERS); /* pong after */
+}
+
+static int
+cmp_u64(const void *a, const void *b)
+{
+	uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+static void
+id_cpuid_cost(void)
+{
+	static uint64_t d[100000];
+	unsigned int    a, b, c, e;
+	int             i;
+
+	for (i = 0; i < 100000; i++) {
+		uint64_t t0 = rdtsc_serialized_start(), t1;
+
+		a = 0; c = 0;
+		__asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(e));
+		t1   = rdtsc_serialized_end();
+		d[i] = t1 - t0;
+	}
+	qsort(d, 100000, sizeof(d[0]), cmp_u64);
+	printf("ipc_perf: user-mode cpuid round trip (with its rdtsc pair): min %lu p50 %lu p99 %lu\n",
+	       (unsigned long)d[0], (unsigned long)d[50000], (unsigned long)d[99000]);
+}
+
+static void
 id_t8(void)
 {
 	struct stat   st;
@@ -537,7 +607,8 @@ static int
 id_main(int argc, char **argv, int *bench)
 {
 	int i, reg = 0, unreg = 0, want12 = 0, hold = 0, locked = 0, t4 = 0, churn = 0, gate = -1, t5 = 0, t6 = 0, t8 = 0;
-	int stub_local = 0;
+	int stub_local = 0, t11_tamper = 0;
+	unsigned long t11_secs = 0;
 	unsigned long ainline = 0;
 	unsigned long attempts = 0, kvm = 0, lflags = 0, heap_mb = 0, secs = 0;
 	long r;
@@ -564,6 +635,9 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--t6")) t6 = 1;
 		else if (!strcmp(argv[i], "--t8")) t8 = 1;
 		else if (!strcmp(argv[i], "--stub-local")) stub_local = 1;
+		else if (!strcmp(argv[i], "--t11") && i + 1 < argc) t11_secs = strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--t11-tamper")) t11_tamper = 1;
+		else if (!strcmp(argv[i], "--cpuid-cost")) { id_cpuid_cost(); *bench = 0; }
 		else if (!strcmp(argv[i], "--dump")) {
 			if (id_open() < 0) return 1;
 			r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
@@ -622,7 +696,7 @@ id_main(int argc, char **argv, int *bench)
 			memset(t5_stack, 0, sizeof(t5_stack)); /* T5's data, present before registering */
 			t5_saved_rsp = t5_rax = 0;
 		}
-		lock_prepare(heap_mb, *bench && !attempts && !secs && !t4 && !t5 && !t6 && !t8 && !ainline);
+		lock_prepare(heap_mb, *bench && !attempts && !secs && !t4 && !t5 && !t6 && !t8 && !ainline && !t11_secs);
 		if (gate >= 0) {
 			struct errand_id_gate_req req = { (unsigned long)g, (unsigned long)gate, lflags };
 
@@ -654,6 +728,7 @@ id_main(int argc, char **argv, int *bench)
 		if (t5) { id_t5(); *bench = 0; }
 		if (t6) { id_t6(); *bench = 0; }
 		if (t8) { id_t8(); *bench = 0; }
+		if (t11_secs) { id_t11(t11_secs, t11_tamper); *bench = 0; }
 		if (t4) {
 			id_t4();
 			*bench = 0;

@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 4: T10 W3: W1 beside the T3 background load (spawning and 16 MiB churn)
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "T10 W3: W1 beside the T3 background load (spawning and 16 MiB churn)"
+init        = "run_t10w3.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

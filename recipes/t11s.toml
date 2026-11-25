@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 4: T11 short (QEMU): 10 s of checked gate calls with tampering
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "T11 short (QEMU): 10 s of checked gate calls with tampering"
+init        = "run_t11s.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

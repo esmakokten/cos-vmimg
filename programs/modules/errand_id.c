@@ -35,6 +35,8 @@
 #include <asm/tlbflush.h>
 #include <asm/msr.h>
 #include <linux/io.h>
+#include <linux/hrtimer.h>
+#include <asm/irq_regs.h>
 
 #include "errand_id_abi.h"
 
@@ -183,6 +185,7 @@ errand_id_register_locked(unsigned long flags)
  * writes the stub into the page.
  */
 static struct errand_id_gate_page *gate_regpage;
+static unsigned long               t11_gate; /* T11 (Phase 4): the last gate registered */
 
 static int
 errand_id_open(struct inode *inode, struct file *f)
@@ -243,6 +246,7 @@ errand_id_register_gate(struct file *f, unsigned long uarg)
 		pr_info("errand_id: register-gate test: page %#lx left out of the list\n",
 		        gate_regpage->gpa[gate_regpage->count]);
 	}
+	t11_gate = req.gate_va; /* T11 looks for frames in this page */
 	t0  = rdtsc_ordered();
 	ret = errand_id_vmcall3(ERRAND_ID_OP_REGISTER_GATE, roots[0], n > 1 ? roots[1] : 0, __pa(gate_regpage));
 	t1  = rdtsc_ordered();
@@ -271,6 +275,73 @@ errand_id_t5(unsigned long uarg)
 	r->si = t.rsi;
 	r->di = t.rdi;
 	return (long)t.rax; /* the syscall return writes this into rax */
+}
+
+/*
+ * T11 (Phase 4): a 1 kHz high-resolution timer. Its callback runs in the guest's timer interrupt;
+ * when that interrupt landed on the armed process in user mode, the interrupted frame is
+ * get_irq_regs(). This is what Linux sees of a thread interrupted inside its gate.
+ */
+static struct hrtimer       t11_timer;
+static struct task_struct  *t11_task;
+static unsigned long        t11_mode;
+static struct errand_id_t11 t11;
+
+static enum hrtimer_restart
+t11_fn(struct hrtimer *t)
+{
+	struct pt_regs *r = get_irq_regs();
+
+	t11.ticks++;
+	if (current == t11_task && r && user_mode(r)) {
+		unsigned long off = r->ip - t11_gate;
+		int           k;
+
+		t11.frames++;
+		if (t11_gate && off < PAGE_SIZE) {
+			k = off == 0 ? 0 : off == 1 ? 1 : off == ERRAND_ID_GATE_VMCALL_OFF ? 2 : off == 10 ? 3 : off == 11 ? 4 : off == 16 ? 5 : 6;
+			t11.in_gate[k]++;
+			if (!(r->bx | r->si | r->di | r->dx)) {
+				t11.blank++;
+			} else {
+				unsigned long v[4] = { r->bx, r->si, r->di, r->dx };
+				int           j, own = 1;
+
+				t11.nonblank++;
+				for (j = 0; j < 4; j++) if (v[j] && v[j] != ERRAND_ID_T11_MARK) own = 0;
+				if (own) t11.nonblank_own++;
+			}
+			if (t11_mode & ERRAND_ID_T11_TAMPER) {
+				/* A59: the argument before the vmcall, the result after it, both at the resume point */
+				if (off <= ERRAND_ID_GATE_VMCALL_OFF || off == 16) r->bx = ERRAND_ID_T11_MARK;
+				if (off == 10 || off == 11 || off == 16) r->ax = ERRAND_ID_T11_MARK;
+				if (off <= ERRAND_ID_GATE_VMCALL_OFF || off == 10 || off == 11 || off == 16) t11.tampered++;
+			}
+		}
+	}
+	hrtimer_forward_now(t, ns_to_ktime(1000000));
+	return HRTIMER_RESTART;
+}
+
+static long
+errand_id_t11(unsigned long uarg)
+{
+	struct errand_id_t11 a;
+
+	if (copy_from_user(&a, (void __user *)uarg, sizeof(a))) return -EFAULT;
+	if (a.mode) {
+		memset(&t11, 0, sizeof(t11));
+		t11_mode = a.mode;
+		t11_task = current;
+		hrtimer_init(&t11_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		t11_timer.function = t11_fn;
+		hrtimer_start(&t11_timer, ns_to_ktime(1000000), HRTIMER_MODE_REL);
+		return 0;
+	}
+	hrtimer_cancel(&t11_timer);
+	t11_task = NULL;
+	t11.mode = t11_mode;
+	return copy_to_user((void __user *)uarg, &t11, sizeof(t11)) ? -EFAULT : 0;
 }
 
 /* T6: one byte written to the gate page through the kernel's direct map. */
@@ -396,6 +467,8 @@ errand_id_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		return errand_id_t5(arg);
 	case ERRAND_ID_IOC_T6:
 		return errand_id_t6(f);
+	case ERRAND_ID_IOC_T11:
+		return errand_id_t11(arg);
 	}
 
 	unsigned long roots[2];
