@@ -22,6 +22,8 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
+#include <time.h>
 #include "stats.h"
 #include "errand_id_abi.h"
 
@@ -135,9 +137,22 @@ vm_ipc_call(unsigned long cap_no,
  *   --soak-fork N     Q10: N rounds of fork; the child registers, prints one line, makes 100
  *                     checked calls, unregisters and exits (a new process and PGD each round)
  *   --soak-loop N     Q10: one process, N rounds of register, 100 checked calls, unregister
+ * Phase 2 (page-table lock):
+ *   --register-locked register with the page tables locked (THP off, mlockall, every allocation
+ *                     made first); a later allocation or page fault would revoke the registration
+ *   --no-preset       with --register-locked: the module does not pre-set accessed/dirty (T3 arm B)
+ *   --heap-mb N       allocate and touch N MiB of heap before registering (T9)
+ *   --seconds N       instead of the benchmark: call slot 0 for N seconds, counted (T3)
+ *   --t4              after registering: have the module rewrite one of our code-page entries, then
+ *                     10^4 calls counted, then the entry restored (T4)
+ *   --exit-registered exit without unregistering (T7)
+ *   --churn           forever: map 16 MiB, touch it, unmap it (T3's background load)
+ *   --dump            ask the VMM to print its page-table-lock counters
  * With no flag, ipc_perf is the T0 benchmark it always was.
  */
 static int id_fd = -1;
+static uint64_t *bench_pre0, *bench_pre1; /* the benchmark's buffers, allocated before a locked registration */
+static int id_exit_registered;
 static volatile sig_atomic_t id_stop;
 
 static void id_on_term(int sig) { (void)sig; id_stop = 1; }
@@ -246,11 +261,80 @@ soak_loop(unsigned long n)
 	return fail != 0;
 }
 
+/* Everything a locked process will touch is mapped and faulted before it registers. */
+static void
+lock_prepare(unsigned long heap_mb, int bench)
+{
+	volatile char   stack[256 * 1024];
+	struct timespec ts;
+	unsigned long   i;
+
+	prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
+	for (i = 0; i < sizeof(stack); i += 4096) stack[i] = 1; /* grow the stack now */
+	if (heap_mb) {
+		char *h = malloc(heap_mb << 20);
+
+		if (h) memset(h, 1, heap_mb << 20);
+	}
+	if (bench) {
+		bench_pre0 = aligned_alloc(64, 100000 * sizeof(uint64_t));
+		bench_pre1 = aligned_alloc(64, 100000 * sizeof(uint64_t));
+		if (bench_pre0) memset(bench_pre0, 0, 100000 * sizeof(uint64_t));
+		if (bench_pre1) memset(bench_pre1, 0, 100000 * sizeof(uint64_t));
+	}
+	clock_gettime(CLOCK_MONOTONIC, &ts); /* the vDSO data page */
+	pin_cpu0();
+	mlockall(MCL_CURRENT | MCL_FUTURE);
+	printf("ipc_perf: pid %d prepared for a locked registration (heap %lu MiB)\n", getpid(), heap_mb);
+	fflush(stdout);
+}
+
+static void
+id_seconds(unsigned long secs)
+{
+	unsigned long   n = 0, served = 0, refused = 0, other = 0, last = 0;
+	struct timespec t0, t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (;;) {
+		last = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+		if (last == 100) served++;
+		else if ((long)last == -1) refused++;
+		else other++;
+		if ((++n & 0xfff) == 0) {
+			clock_gettime(CLOCK_MONOTONIC, &t);
+			if ((unsigned long)(t.tv_sec - t0.tv_sec) >= secs) break;
+		}
+	}
+	printf("ipc_perf: %lu s pid %d: %lu calls, served %lu, refused %lu, other %lu (last %ld)\n", secs, getpid(), n,
+	       served, refused, other, (long)last);
+}
+
+static void ipc_perf_bench(void);
+
+static void
+id_t4(void)
+{
+	unsigned long va = (unsigned long)&ipc_perf_bench, i, served = 0, refused = 0, other = 0, r;
+	long          ret;
+
+	ret = ioctl(id_fd, ERRAND_ID_IOC_T4_REWRITE, va);
+	for (i = 0; i < 10000; i++) {
+		r = vm_ipc_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40);
+		if (r == 100) served++;
+		else if ((long)r == -1) refused++;
+		else other++;
+	}
+	printf("ipc_perf: T4 pid %d: rewrite of the entry for %#lx: %ld; then 10000 calls: served %lu, refused %lu, other %lu\n",
+	       getpid(), va, ret, served, refused, other);
+	printf("ipc_perf: T4 restore: %d\n", ioctl(id_fd, ERRAND_ID_IOC_T4_REWRITE, va | 1));
+}
+
 static int
 id_main(int argc, char **argv, int *bench)
 {
-	int i, reg = 0, unreg = 0, want12 = 0, hold = 0;
-	unsigned long attempts = 0, kvm = 0;
+	int i, reg = 0, unreg = 0, want12 = 0, hold = 0, locked = 0, t4 = 0, churn = 0;
+	unsigned long attempts = 0, kvm = 0, lflags = 0, heap_mb = 0, secs = 0;
 	long r;
 
 	for (i = 1; i < argc; i++) {
@@ -260,7 +344,19 @@ id_main(int argc, char **argv, int *bench)
 		else if (!strcmp(argv[i], "--hold")) hold = 1;
 		else if (!strcmp(argv[i], "--attempts") && i + 1 < argc) attempts = strtoul(argv[++i], 0, 0);
 		else if (!strcmp(argv[i], "--kernel-vmcall") && i + 1 < argc) kvm = strtoul(argv[++i], 0, 0);
-		else if (!strcmp(argv[i], "--soak-fork") && i + 1 < argc) {
+		else if (!strcmp(argv[i], "--register-locked")) locked = 1;
+		else if (!strcmp(argv[i], "--no-preset")) lflags |= ERRAND_ID_LOCK_NO_PRESET;
+		else if (!strcmp(argv[i], "--heap-mb") && i + 1 < argc) heap_mb = strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) secs = strtoul(argv[++i], 0, 0);
+		else if (!strcmp(argv[i], "--t4")) t4 = 1;
+		else if (!strcmp(argv[i], "--exit-registered")) id_exit_registered = 1;
+		else if (!strcmp(argv[i], "--churn")) churn = 1;
+		else if (!strcmp(argv[i], "--dump")) {
+			if (id_open() < 0) return 1;
+			r = ioctl(id_fd, ERRAND_ID_IOC_DUMP);
+			printf("ipc_perf: dump requested: %ld\n", r);
+			*bench = 0;
+		} else if (!strcmp(argv[i], "--soak-fork") && i + 1 < argc) {
 			*bench = 0;
 			if (soak_fork(strtoul(argv[++i], 0, 0))) return 1;
 		} else if (!strcmp(argv[i], "--soak-loop") && i + 1 < argc) {
@@ -274,6 +370,37 @@ id_main(int argc, char **argv, int *bench)
 		} else {
 			printf("ipc_perf: unknown argument %s\n", argv[i]);
 			return 1;
+		}
+	}
+	if (churn) {
+		for (;;) {
+			char *m = mmap(0, 16 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+			if (m == MAP_FAILED) continue;
+			memset(m, 1, 16 << 20);
+			munmap(m, 16 << 20);
+		}
+	}
+	if (locked) {
+		struct errand_id_reg_stat st = { 0 };
+		unsigned long             root;
+
+		if (id_open() < 0) return 1;
+		root = id_root();
+		lock_prepare(heap_mb, *bench && !attempts && !secs && !t4);
+		r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER_LOCKED, lflags);
+		ioctl(id_fd, ERRAND_ID_IOC_LAST_REG, &st);
+		printf("ipc_perf: pid %d registered locked root %#lx%s: %ld (%lu page-table pages, %lu cycles)\n", getpid(),
+		       root, (lflags & ERRAND_ID_LOCK_NO_PRESET) ? " (no preset)" : "", r, st.pages, st.cycles);
+		fflush(stdout);
+		if (r) return 1;
+		if (t4) {
+			id_t4();
+			*bench = 0;
+		}
+		if (secs) {
+			id_seconds(secs);
+			*bench = 0;
 		}
 	}
 	if (reg) {
@@ -318,6 +445,11 @@ id_exit(void)
 	long r;
 
 	if (id_fd < 0) return;
+	if (id_exit_registered) {
+		printf("ipc_perf: pid %d exits without unregistering\n", getpid());
+		fflush(stdout);
+		return;
+	}
 	r = ioctl(id_fd, ERRAND_ID_IOC_UNREGISTER);
 	printf("ipc_perf: pid %d unregistered: %ld\n", getpid(), r);
 }
@@ -328,7 +460,7 @@ int main(int argc, char **argv)
 {
 	int bench = 1, reg = 0, i;
 
-	for (i = 1; i < argc; i++) if (!strcmp(argv[i], "--register")) reg = 1;
+	for (i = 1; i < argc; i++) if (!strcmp(argv[i], "--register") || !strcmp(argv[i], "--register-locked")) reg = 1;
 	if (id_main(argc, argv, &bench)) return 1;
 	if (bench) {
 		if (argc > 1 && id_check()) {
@@ -358,9 +490,9 @@ static void ipc_perf_bench(void)
 	pin_cpu0();
 	lock_mem();
 
-	/* Allocate buffers for sample collection */
-	uint64_t *samples_slot0 = aligned_alloc(64, N * sizeof(uint64_t));
-	uint64_t *samples_slot1 = aligned_alloc(64, N * sizeof(uint64_t));
+	/* Allocate buffers for sample collection (a locked registration made them before registering) */
+	uint64_t *samples_slot0 = bench_pre0 ? bench_pre0 : aligned_alloc(64, N * sizeof(uint64_t));
+	uint64_t *samples_slot1 = bench_pre1 ? bench_pre1 : aligned_alloc(64, N * sizeof(uint64_t));
 
 	if (!samples_slot0 || !samples_slot1) {
 		printf("Error: Failed to allocate memory for samples\n");
@@ -418,8 +550,10 @@ static void ipc_perf_bench(void)
 	printf("\n");
 
 	/* Cleanup */
-	stats_free(&stats_slot0);
-	stats_free(&stats_slot1);
+	if (!bench_pre0) { /* a locked process frees nothing: the unmap would revoke it */
+		stats_free(&stats_slot0);
+		stats_free(&stats_slot1);
+	}
 	free(samples_slot0);
 	free(samples_slot1);
 

@@ -1,0 +1,7 @@
+# w11_vmcall_identity Phase 2: the locked registration check, T4 and T7. Needs a Composite system
+# built with VMCALL_IDENTITY, VMCALL_RESUME_RIP3 and VMCALL_PT_LOCK on (VMM_HEARTBEAT for target boots).
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "identity phase 2: locked registration check, T4 (rewrite), T7 (exit while registered)"
+init        = "run_lock.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]
