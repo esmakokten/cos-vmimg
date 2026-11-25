@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 2: T0c: the plain benchmark with the Phase-2 ipc_perf binary, the switches-off anchor for T1-locked
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "T0c: the plain benchmark with the Phase-2 ipc_perf binary, the switches-off anchor for T1-locked"
+init        = "run_t0c.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]

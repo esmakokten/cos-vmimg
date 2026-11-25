@@ -1,0 +1,6 @@
+# w11_vmcall_identity Phase 2: T3 arm A: P locked with pre-setting, revoke mode, 60 s under load
+# Compose composition_scripts/vmm_vm_ipc_test.toml. Build with KVER=5.15.107.
+description = "T3 arm A: P locked with pre-setting, revoke mode, 60 s under load"
+init        = "run_t3a.sh"
+programs    = ["ipc_perf.c"]
+modules     = ["errand_id.c"]
