@@ -26,6 +26,7 @@
 #include <sys/prctl.h>
 #include <malloc.h>
 #include <time.h>
+#include <errno.h>
 #include "stats.h"
 #include "errand_id_abi.h"
 #include "libErrand.h" /* Phase 6: errand_self_register, errand_self_cpuid */
@@ -763,12 +764,13 @@ id_t16(void)
 	errand_self_cpuid(ERRAND_ID_SELF_DUMP, 0, 0);
 	if (!rp) printf("ipc_perf: T16 the 2 MiB leaf removed: %d\n", ioctl(id_fd, ERRAND_ID_IOC_T16_PMD, big | 1));
 
-	r = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)good, 0);
+	/* reserved before the registration: an mmap after it writes the tables and revokes (A79) */
+	second = errand_self_reserve(1);
+	r      = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)good, 0);
 	if (!r) {
 		gate_fn = (unsigned long)good;
 		id_self = 1;
 	}
-	second = errand_self_reserve(1);
 	rp     = errand_self_cpuid(ERRAND_ID_SELF_REGISTER, (unsigned long)second, 0);
 	for (i = 0; i < 10000 && gate_fn; i++) if (vm_call(VM_IPC_CAP_ENCODE(0), 10, 20, 30, 40) == 100) served++;
 	printf("ipc_perf: T16 (6) a good registration at %p: %ld; the same root again at %p: %ld: %s; then 10000 calls: served %lu\n",
@@ -930,6 +932,7 @@ id_main(int argc, char **argv, int *bench)
 		} else {
 			r = ioctl(id_fd, ERRAND_ID_IOC_REGISTER_LOCKED, lflags);
 		}
+		if (!id_self && r == -1) r = -errno; /* the module's answer */
 		if (!id_self) {
 			ioctl(id_fd, ERRAND_ID_IOC_LAST_REG, &st);
 			printf("ipc_perf: pid %d registered %s root %#lx%s: %ld (%lu page-table pages, %lu cycles)\n", getpid(),
